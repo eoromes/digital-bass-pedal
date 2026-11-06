@@ -1,6 +1,12 @@
 .pio/
 .vscode/
+.venv/
+__pycache__/
 
 .claude/
 CLAUDE.md
-__pycache__/
+
+# Recordings and analysis output
+*.wav
+*.csv
+/*.png
