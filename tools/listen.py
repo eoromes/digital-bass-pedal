@@ -3,13 +3,17 @@
 
     .venv/bin/python tools/listen.py [--save file.wav]
 
-With --save, writes the raw ADC values to a WAV file (sample = (raw - 2048) * 16)
-and the firmware timing stats to file.timing.csv.
+With --save, writes the values sent by the ESP32 to a WAV file
+(sample = (value - 2048) * 16) and the firmware stats to file.timing.csv. With
+an effect on, those are the processed values; the effects column says which.
+
+Keys: g toggles the noise gate, [ and ] change its threshold, q quits.
 """
 
 import argparse
 import array
 import os
+import sys
 import termios
 import threading
 import time
@@ -23,11 +27,14 @@ CALLBACK_FRAMES = 128
 STAT_HEADER = 0xC1
 STAT_NAMES = ("max_late_us", "late_over_2us", "late_over_10us", "late_over_50us",
               "late_over_10us_block_start", "dropped_blocks", "read_min_us",
-              "read_mean_us_x10", "read_max_us", "min_slack_us")
+              "read_mean_us_x10", "read_max_us", "min_slack_us", "effects",
+              "gate_threshold_lsb", "fx_max_cycles")
+FX_GATE = 1
+KEYS = b"g[]"
 
 
 def open_serial(port, baud):
-    fd = os.open(port, os.O_RDONLY | os.O_NOCTTY)
+    fd = os.open(port, os.O_RDWR | os.O_NOCTTY)
     tty.setraw(fd)
     attrs = termios.tcgetattr(fd)
     attrs[4] = attrs[5] = getattr(termios, f"B{baud}")
@@ -76,6 +83,22 @@ class Player:
         self.stream.close()
 
 
+def forward_keys(fd):
+    """Sends effect keys to the ESP32; q ends the session."""
+    while True:
+        key = os.read(sys.stdin.fileno(), 1)
+        if not key or key == b"q":
+            os._exit(0)
+        if key in KEYS:
+            os.write(fd, key)
+
+
+def parse_stats(pkt):
+    if not pkt or len(pkt) != 1 + 2 * pkt[0]:
+        return None
+    return [(pkt[1 + 2 * i] << 7) | pkt[2 + 2 * i] for i in range(pkt[0])]
+
+
 class TimingCSV:
     """Created on the first stats packet, so firmware without stats leaves no
     empty file; flushed every row so a killed session keeps what it got."""
@@ -85,11 +108,8 @@ class TimingCSV:
         self.file = None
         self.t0 = time.monotonic()
 
-    def add(self, pkt):
-        if not pkt or len(pkt) != 1 + 2 * pkt[0]:
-            return
-        n = pkt[0]
-        vals = [(pkt[1 + 2 * i] << 7) | pkt[2 + 2 * i] for i in range(n)]
+    def add(self, vals):
+        n = len(vals)
         if self.file is None:
             names = [STAT_NAMES[i] if i < len(STAT_NAMES) else f"field_{i}"
                      for i in range(n)]
@@ -123,7 +143,13 @@ def main():
         wav.setframerate(RATE)
         timing = TimingCSV(args.save.removesuffix(".wav") + ".timing.csv")
 
-    high = stat = dc = None
+    tty_attrs = None
+    if sys.stdin.isatty():
+        tty_attrs = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin)
+        threading.Thread(target=forward_keys, args=(fd,), daemon=True).start()
+
+    high = stat = dc = fx = threshold = None
     lo, hi, sq, count = 4095, 0, 0.0, 0
     raw = array.array("h")
     t0 = time.monotonic()
@@ -138,8 +164,12 @@ def main():
             out = array.array("h")
             for b in data:
                 if b & 0x80:
-                    if stat is not None and timing:
-                        timing.add(stat)
+                    vals = parse_stats(stat)
+                    if vals:
+                        fx = vals[10] if len(vals) > 10 else None
+                        threshold = vals[11] if len(vals) > 11 else None
+                        if timing:
+                            timing.add(vals)
                     stat = [] if b == STAT_HEADER else None
                     high = b & 0x3F if b & 0xC0 == 0x80 else None
                     continue
@@ -161,12 +191,15 @@ def main():
             player.write(out.tobytes())
 
             if time.monotonic() - t0 >= 1.0 and count:
-                print(f"raw {lo:4d}..{hi:4d}  rms {(sq / count) ** 0.5:5.1f}", flush=True)
+                gate = "" if fx is None else f"  gate {'on' if fx & FX_GATE else 'off'} {threshold}"
+                print(f"raw {lo:4d}..{hi:4d}  rms {(sq / count) ** 0.5:5.1f}{gate}", flush=True)
                 lo, hi, sq, count, t0 = 4095, 0, 0.0, 0, time.monotonic()
                 if wav:
                     wav.writeframes(raw.tobytes())
                 raw = array.array("h")
     finally:
+        if tty_attrs:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, tty_attrs)
         player.close()
         if wav:
             wav.writeframes(raw.tobytes())

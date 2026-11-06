@@ -52,7 +52,7 @@ The current firmware streams the raw ADC samples to the PC over USB. The scripts
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
-.venv/bin/python tools/listen.py --save take.wav   # play and record
+.venv/bin/python tools/listen.py --save take.wav   # play and record (keys: g gate, [ ] threshold)
 .venv/bin/python tools/analyze.py take.wav         # noise analysis
 .venv/bin/python tools/view.py take.wav            # waveform, clipping, attacks
 ```
