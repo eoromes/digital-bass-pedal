@@ -7,7 +7,8 @@ With --save, writes the values sent by the ESP32 to a WAV file
 (sample = (value - 2048) * 16) and the firmware stats to file.timing.csv. With
 an effect on, those are the processed values; the effects column says which.
 
-Keys: g toggles the noise gate, [ and ] change its threshold, q quits.
+Keys: g toggles the noise gate, [ and ] change its threshold; c toggles the
+chorus, m/M d/D r/R lower/raise its mix, depth and rate; q quits.
 """
 
 import argparse
@@ -28,9 +29,11 @@ STAT_HEADER = 0xC1
 STAT_NAMES = ("max_late_us", "late_over_2us", "late_over_10us", "late_over_50us",
               "late_over_10us_block_start", "dropped_blocks", "read_min_us",
               "read_mean_us_x10", "read_max_us", "min_slack_us", "effects",
-              "gate_threshold_lsb", "fx_max_cycles")
+              "gate_threshold_lsb", "fx_max_cycles",
+              "chorus_mix_x100", "chorus_depth_ms_x10", "chorus_rate_hz_x100")
 FX_GATE = 1
-KEYS = b"g[]"
+FX_CHORUS = 2
+KEYS = b"g[]cmMdDrR"
 
 
 def open_serial(port, baud):
@@ -149,7 +152,7 @@ def main():
         tty.setcbreak(sys.stdin)
         threading.Thread(target=forward_keys, args=(fd,), daemon=True).start()
 
-    high = stat = dc = fx = threshold = None
+    high = stat = dc = fx = threshold = chorus = None
     lo, hi, sq, count = 4095, 0, 0.0, 0
     raw = array.array("h")
     t0 = time.monotonic()
@@ -168,6 +171,7 @@ def main():
                     if vals:
                         fx = vals[10] if len(vals) > 10 else None
                         threshold = vals[11] if len(vals) > 11 else None
+                        chorus = vals[13:16] if len(vals) > 15 else None
                         if timing:
                             timing.add(vals)
                     stat = [] if b == STAT_HEADER else None
@@ -191,7 +195,11 @@ def main():
             player.write(out.tobytes())
 
             if time.monotonic() - t0 >= 1.0 and count:
-                gate = "" if fx is None else f"  gate {'on' if fx & FX_GATE else 'off'} {threshold}"
+                gate = "" if fx is None else (f"  gate {'on' if fx & FX_GATE else 'off'} {threshold}"
+                                         f"  chorus {'on' if fx & FX_CHORUS else 'off'}")
+                if chorus:
+                    gate += (f" mix {chorus[0] / 100:.1f} depth {chorus[1] / 10:.1f} ms"
+                             f" rate {chorus[2] / 100:.2f} Hz")
                 print(f"raw {lo:4d}..{hi:4d}  rms {(sq / count) ** 0.5:5.1f}{gate}", flush=True)
                 lo, hi, sq, count, t0 = 4095, 0, 0.0, 0, time.monotonic()
                 if wav:
