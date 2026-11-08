@@ -1,4 +1,4 @@
-# digital-guitar-pedal
+# digital-bass-pedal
 
 Digital bass effects pedal built around an ESP32-S3.
 
