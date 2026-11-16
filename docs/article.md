@@ -1,6 +1,6 @@
 # Building a Digital Bass Pedal on an ESP32 (draft)
 
-*Draft markers: **[TBD]** = not done yet (external ADC, DAC, latency). **[NOTE]** = may still change. **[FIG]** = planned figure.*
+*Draft markers: **[TBD]** = not done yet (DAC output, latency). **[NOTE]** = may still change. **[FIG]** = planned figure.*
 
 ## TL;DR
 
@@ -8,7 +8,7 @@
 - The weak point is the ESP32's built-in ADC. With its input tied to a steady voltage it still hisses: about **55 dB** of dynamic range, or roughly **9 useful bits out of 12**.
 - It is also slow. One reading takes **41 µs**, two thirds of the time I have per sample at 16 kHz. That leaves little room for effects and rules out standard audio rates like 48 kHz.
 - Two timing bugs had me fooled. A serial write inside the sampling loop made high notes sound metallic. Later, adding *unrelated* code dropped the sample rate from 16 to 11 kHz, because of instruction-cache conflicts.
-- Next step: a dedicated audio ADC (PCM1808) and DAC (PCM5102A) sharing one I2S clock. **[TBD]** results.
+- This version of the pedal stays on the built-in ADC; what's left is the output, through a PCM5102A DAC. A later version will try an external audio ADC with a much better signal-to-noise ratio.
 
 ## Why I'm building this
 
@@ -29,16 +29,11 @@ What I wanted from it:
 
 ## How it works
 
-The signal path is: bass → analog front end → ADC → effects on the ESP32 → DAC → volume → amp. There are two versions of the hardware, both on an original ESP32 (two 240 MHz cores with a floating-point unit):
+The signal path is: bass → analog front end → ADC → effects on the ESP32 → DAC → volume → amp. It all runs on an original ESP32 (two 240 MHz cores with a floating-point unit), and this version uses the chip's built-in ADC. I built the input side first. With no DAC connected yet, I send the audio to my PC over USB and listen through headphones, so for testing the board works as a simple audio interface.
 
-- **Prototype A (working today)** uses the ESP32's built-in ADC. I built the input side first. With no DAC connected yet, I send the audio to my PC over USB and listen through headphones, so for testing the board works as a simple audio interface.
-- **Prototype B (in progress)** keeps the same front end, but uses a dedicated audio ADC and DAC that share one clock.
+![Signal chain](figures/signal_chain.png)
 
-![Signal chain of both prototypes](figures/signal_chain.png)
-
-*Signal chain of Prototype A (measured) and Prototype B (in progress).*
-
-Both prototypes share the front end. B replaces software sampling and the PC with converters clocked by I2S.
+*Top: the signal chain of this version, as measured. Bottom: a possible next version with an external audio ADC (see the end of the post).*
 
 ### The analog front end
 
@@ -58,7 +53,7 @@ A bass pickup can't go straight into an ADC pin. Its signal is small, swings aro
 
 *Three strong attacks of an A1 (54.8 Hz): tall, narrow positive pulses and wide, shallow troughs. The flat tops (red) are the ADC hitting its maximum of 4095.*
 
-## Prototype A: making it work with the built-in ADC
+## Making it work with the built-in ADC
 
 The first version reads the ADC with Arduino's `analogRead`, 16,000 times per second, and sends every raw sample to the PC. With no DAC yet, the PC does two jobs: it is my speaker and my measuring instrument.
 
@@ -83,8 +78,8 @@ Each problem started as a sound I didn't like and ended with a number that expla
 | Rough hum that changed when I touched the strings | Loose ground on the input jack | Tighten, then solder **[TBD]** |
 | Heavy distortion | My own PC script clipping 17% of samples | Lower its gain |
 | Metallic, "doubled" high notes | Samples taken up to 52 µs late, 250 times a second | Split the work across the two cores |
-| Constant hiss | The ESP32's ADC itself | A dedicated audio ADC |
-| Hiss pulsing about 1.5 times a second | Something on the digital side; still open | Probably the external ADC |
+| Constant hiss | The ESP32's ADC itself | The limit of this version (see "Next version") |
+| Hiss pulsing about 1.5 times a second | Something on the digital side | Still open |
 | Effects "cutting in and out" | The sample rate collapsing to 11 kHz because of cache conflicts | Move the audio code to internal RAM (IRAM) |
 
 ### 1. The hum was the jack
@@ -119,7 +114,7 @@ The size of the copies told me the cause. If a sample is taken late, the error i
 
 ### 4. The hiss is the ADC itself
 
-To find out how much hiss the ADC adds on its own, I wired its pin straight to a steady 1.6 V: no op-amp, no bass, no jack. It still hissed: 2.5 LSB RMS, which is about **55 dB** of dynamic range, or roughly **9 useful bits out of 12**. For comparison, the PCM1808's datasheet promises 99 dB. With my hand on the strings, the high-frequency noise of the full setup matched the bare ADC, so the analog circuit isn't the problem. The ADC also skips whole ranges of codes: 18 values just above 1536, 4 above 2048, 23 above 2560. The other ADC block (ADC1) was twice as noisy.
+To find out how much hiss the ADC adds on its own, I wired its pin straight to a steady 1.6 V: no op-amp, no bass, no jack. It still hissed: 2.5 LSB RMS, which is about **55 dB** of dynamic range, or roughly **9 useful bits out of 12**. For comparison, a dedicated audio ADC such as the PCM1808 promises 99 dB in its datasheet. With my hand on the strings, the high-frequency noise of the full setup matched the bare ADC, so the analog circuit isn't the problem. The ADC also skips whole ranges of codes: 18 values just above 1536, 4 above 2048, 23 above 2560. The other ADC block (ADC1) was twice as noisy.
 
 ![Noise of the ADC alone vs. the full chain](figures/adc_noise_floor.png)
 
@@ -131,7 +126,7 @@ To find out how much hiss the ADC adds on its own, I wired its pin straight to a
 
 ### 5. A pulsing hiss I haven't solved yet
 
-There is also a burst of noise every ~640 ms, lasting 30–100 ms. I tested the suspects one at a time: the jack ground, the laptop charger, the USB port, the other ADC, the bass cable, the op-amp, and even the data transfer (recording to RAM with serial fully stopped). The bursts survived every test, so they come from the digital side: the chip, its power, or USB. **[NOTE]** Still open. I expect the external ADC to get rid of them; check in Prototype B.
+There is also a burst of noise every ~640 ms, lasting 30–100 ms. I tested the suspects one at a time: the jack ground, the laptop charger, the USB port, the other ADC, the bass cable, the op-amp, and even the data transfer (recording to RAM with serial fully stopped). The bursts survived every test, so they come from the digital side: the chip, its power, or USB. **[NOTE]** Still open.
 
 ![Noise bursts every 640 ms](figures/noise_bursts.png)
 
@@ -179,38 +174,40 @@ To check that it does what I designed, and not just that it "sounds like a choru
 
 **[TBD]** Overdrive (low end kept clean), compressor and delay. The overdrive is the reason the hiss matters so much: its gain amplifies the ADC's hiss together with the bass.
 
-## Prototype B: a real audio ADC and DAC
+## Finishing this version: the output
 
-I bought a PCM1808 audio ADC for two reasons: the hiss, and the time `analogRead` eats. Moving the conversion off the chip fixes three things at once:
+The input side is done; the output is what turns this into a pedal. The ESP32 sends the processed samples over I2S to a PCM5102A DAC, which puts out line level. A 22 kΩ resistor and a 10 kΩ volume knob bring its 2.1 V RMS down to about 0.66 V RMS, which suits a bass amp input. **[FIG]** Block diagram of the output.
 
-1. **Less noise.** The datasheets give 99 dB for the PCM1808 and 112 dB for the PCM5102A DAC, against the ~55 dB I measured on the built-in ADC.
-2. **Much more CPU time.** The I2S hardware collects the samples with DMA, so the CPU only has to finish each block before the next one arrives. At 48 kHz a 64-sample block lasts 1.33 ms, about 320,000 cycles. In Prototype A I had about 2,400 spare cycles per sample.
-3. **Exact timing.** The I2S clock sets the sample moments, not a software loop, so problems 3 and 6 can't happen anymore.
+The PCM5102A makes its own clocks from the I2S bit clock, so it needs no master clock and none of the awkward pins on the original ESP32. GPIO12 is a boot strapping pin, so it stays off the list. Sample rate and block size: **[TBD]**.
 
-**How it's wired.** The ESP32 drives a single I2S clock, and both the PCM1808 (input) and the PCM5102A (output) use it. Input and output then can never drift apart, which was a real problem when playing through the PC. DMA fills a block, an audio task processes it, and DMA sends it out. The buttons and LEDs run on the other core. **[FIG]** Block diagram of Prototype B.
+**[NOTE]** With the DAC in place, the sampling loop also has to feed the output at a steady rate. An option to check here is the ADC's continuous mode with DMA, which takes `analogRead` out of the loop and lets the hardware time the samples.
 
-**Output.** A 22 kΩ resistor and a 10 kΩ volume knob bring the DAC's line level (2.1 V RMS) down to about 0.66 V RMS, which suits a bass amp input.
+## The numbers so far
 
-**[NOTE]** Original-ESP32 details to check while wiring: the PCM1808 needs a master clock at 256 × the sample rate, and the original ESP32 can only output it on GPIO0, 1 or 3. GPIO0 is a boot pin, and GPIO1/3 are the USB serial pins. The I2S pins from the old S3 plan (12/13/14) include GPIO12, which is a boot strapping pin on the original ESP32. Block size: **[TBD]** 32 or 64. Sample rate: **[TBD]** 48 kHz.
+Every measurement uses the same tests: the input tied to a steady voltage, the bass resting, and the bass playing.
 
-**[NOTE]** The hiss is clearly the ADC's (problem 4). The pulsing bursts (problem 5) might also come from the board's power or ground, so test them again here.
-
-## Before and after
-
-Both prototypes go through the same tests: the input tied to a steady voltage, the bass resting, and the bass playing. **[TBD]** Every Prototype B number.
-
-| | Prototype A (built-in ADC) | Prototype B (PCM1808 + PCM5102A) |
-| --- | --- | --- |
-| Sample rate | 16 kHz, software-timed (max ~20 kHz) | **[TBD]** 48 kHz, set by the I2S clock |
-| ADC alone: dynamic range | ~55 dB (~9 useful bits) | **[TBD]** (datasheet: 99 dB) |
-| Full chain, bass resting | 4.1 LSB RMS (~51 dB) | **[TBD]** |
-| Skipped ADC codes | Yes: 4 to 23 at a time | **[TBD]** |
-| Pulsing hiss | ~1.5 bursts per second | **[TBD]** |
-| CPU time spent just reading the ADC | ~65% | **[TBD]** |
-| Gate + chorus | ~700 cycles per sample | **[TBD]** cycles per block |
-| Delay from string to speaker | Not measured | **[TBD]** ms |
+| | This version (built-in ADC) |
+| --- | --- |
+| Sample rate | 16 kHz, software-timed (max ~20 kHz) |
+| ADC alone: dynamic range | ~55 dB (~9 useful bits) |
+| Full chain, bass resting | 4.1 LSB RMS (~51 dB) |
+| Skipped ADC codes | Yes: 4 to 23 at a time |
+| Pulsing hiss | ~1.5 bursts per second |
+| CPU time spent just reading the ADC | ~65% |
+| Gate + chorus | ~700 cycles per sample |
+| Delay from string to speaker | **[TBD]** ms |
 
 **[TBD]** How to measure the delay: send a click into the input and record the input and the output at the same time on two channels, then measure the gap between them.
+
+## Next version: an external audio ADC
+
+This version shows how far the ESP32's own ADC can go, and where it stops. The obvious next step is a separate audio ADC, such as the PCM1808, with a much better signal-to-noise ratio. It would help in three ways:
+
+1. **Less noise.** The PCM1808's datasheet gives 99 dB, against the ~55 dB I measured on the built-in ADC. That matters most for a clean tone and for the overdrive, whose gain amplifies the hiss along with the bass.
+2. **More CPU time.** The I2S hardware collects the samples with DMA, so the CPU only has to finish each block before the next one arrives. At 48 kHz a 64-sample block lasts 1.33 ms, about 320,000 cycles; today I have about 2,400 spare cycles per sample.
+3. **Exact timing.** The I2S clock sets the sample moments, so problems 3 and 6 can't happen. With the ADC and the DAC on the same clock, input and output can never drift apart.
+
+The same front end works with it, and the table above becomes the "before" to compare against. One thing to plan for on the original ESP32: the PCM1808 needs a master clock at 256 × the sample rate, which this chip can only output on GPIO0, 1 or 3 (a boot pin and the two USB serial pins).
 
 ## What I learned
 
@@ -222,7 +219,8 @@ Both prototypes go through the same tests: the input tied to a steady voltage, t
 
 ## What's next
 
-- The output side (Prototype B), which turns this into a real pedal, and filling in the table above.
+- The output side, which turns this into a real pedal, and filling in the table above.
+- In a next version, an external audio ADC, measured with the same tests as this one.
 - Footswitches with an LED per effect, in a metal enclosure.
 - More effects: overdrive, compressor and delay.
 - A PCB to replace the breadboard.
@@ -238,11 +236,11 @@ The figures above were regenerated in English from the raw recordings by `docs/m
 | Front-end schematic | Analog front end | **[TBD]** Redraw from the hardware notes |
 | Sample rate for each firmware variant | Problem 6 | **[TBD]** New |
 | Cepstral peak following the chorus sweep | Chorus | **[TBD]** New |
-| Block diagram of Prototype B | Prototype B | **[TBD]** New |
-| Noise spectrum, A vs. B | Before and after | **[TBD]** New |
+| Block diagram of the output | Finishing this version | **[TBD]** New |
+| Signal chain with this version only | How it works | **[TBD]** Optional redraw |
 
 **Other versions to derive from this one:**
 
 - [ ] LinkedIn post: 5–6 lines, one figure, link to the Medium article.
 - [ ] README section on GitHub linking to the article.
-- [ ] Video script following the same order: why → how it works → problems → Prototype B.
+- [ ] Video script following the same order: why → how it works → problems → output → next version.
