@@ -14,8 +14,8 @@ Write-up of the project so far: [docs/article.md](docs/article.md) (draft).
 
 - ESP32 DevKit (original ESP32, dual-core 240 MHz, with a CP2102 USB-serial bridge)
 - MCP6002 as a high-impedance buffer, adjustable gain (1x to 11x) and ~11 kHz anti-aliasing filter
-- Input: the ESP32's built-in ADC today; a PCM1808 I2S ADC next
-- Output: PCM5102A I2S DAC (not connected yet), sharing the I2S clock with the PCM1808
+- Input: the ESP32's built-in ADC
+- Output: PCM5102A I2S DAC (not connected yet)
 - Planned: one button and one LED per effect
 
 ### Pins
@@ -24,7 +24,7 @@ Write-up of the project so far: [docs/article.md](docs/article.md) (draft).
 | --- | --- |
 | Audio input (built-in ADC2) | 4 |
 
-The pins for the PCM1808, the PCM5102A, the buttons and the LEDs are not decided yet. On the original ESP32, the I2S master clock the PCM1808 needs can only go out on GPIO0, 1 or 3. GPIO12 is a boot strapping pin.
+The pins for the PCM5102A, the buttons and the LEDs are not decided yet. GPIO12 is a boot strapping pin on the original ESP32.
 
 The PCM5102A needs SCK tied to GND and the XSMT jumper set to H, otherwise it stays muted.
 
@@ -60,4 +60,6 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 
 ## Status
 
-The analog input is built and characterized. With its input tied to a clean DC level, the built-in ADC alone reaches only about 55-60 dB of dynamic range, and each `analogRead` takes about 41 µs, which caps software sampling at about 20 kHz. Next steps: the PCM1808 ADC and the PCM5102A output on one I2S clock.
+The analog input is built and characterized. With its input tied to a clean DC level, the built-in ADC alone reaches only about 55-60 dB of dynamic range, and each `analogRead` takes about 41 µs, which caps software sampling at about 20 kHz. Next step for this version: the PCM5102A output.
+
+A future version may replace the built-in ADC with an external audio ADC (such as the PCM1808) for a much better signal-to-noise ratio.
