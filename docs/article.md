@@ -33,7 +33,7 @@ The signal path is: bass → analog front end → ADC → effects on the ESP32 �
 
 ![Signal chain](figures/signal_chain.png)
 
-*Top: the signal chain of this version, as measured. Bottom: a possible next version with an external audio ADC (see the end of the post).*
+*Signal chain of this version. The PC is only the test bench; the PCM5102A output (dashed) is still to be connected.*
 
 ### The analog front end
 
@@ -237,7 +237,6 @@ The figures above were regenerated in English from the raw recordings by `docs/m
 | Sample rate for each firmware variant | Problem 6 | **[TBD]** New |
 | Cepstral peak following the chorus sweep | Chorus | **[TBD]** New |
 | Block diagram of the output | Finishing this version | **[TBD]** New |
-| Signal chain with this version only | How it works | **[TBD]** Optional redraw |
 
 **Other versions to derive from this one:**
 
