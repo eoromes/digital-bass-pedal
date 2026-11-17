@@ -1,29 +1,32 @@
-// Samples the ADC at 16 kHz and streams it to the PC (tools/listen.py).
-// Core 1 only samples; core 0 sends. Calling Serial.write from the sampling
-// loop delayed a couple of samples every block, which sounded metallic.
+// Samples the bass at 16 kHz and streams it to the PC (tools/listen.py).
+// ADC1 runs in continuous mode with DMA on GPIO33 at 16 x 16 kHz, and each
+// output sample is the mean of 16 conversions. Of the ADC1 pins, GPIO33 had
+// the least hiss, and the mean of 16 brought it below analogRead (E18).
+// Core 1 reads the DMA frames and runs the effects; core 0 sends.
 //
-// Effects run per sample inside the sampling loop: block-level processing
-// would delay the first samples of the next block. The sampling loop and the
-// effects stay in IRAM: when code around analogRead runs from flash, it fights
-// analogRead for the cache, the read gets 10-20 us slower and the sample rate
-// collapses. Which builds do that depends on the code layout. Commands from the PC:
-// 'g' toggles the noise gate, '[' and ']' lower and raise its threshold,
-// 'c' toggles the chorus; m/M, d/D and r/R lower/raise its mix, depth and rate.
+// Effects run per sample. Commands from the PC: 'g' toggles the noise gate,
+// '[' and ']' lower and raise its threshold, 'c' toggles the chorus; m/M, d/D
+// and r/R lower/raise its mix, depth and rate.
 //
 // Sample: 10xxxxxx 0xxxxxxx (12 bits). Once per second: STAT_HEADER, field
-// count and 14-bit fields as two 0xxxxxxx bytes (see build_stats).
+// count and 14-bit fields as two 0xxxxxxx bytes (see build_stats). Fields 0-4
+// and 6-9 were analogRead timing and are now always 0.
 #include <Arduino.h>
+#include <esp_adc/adc_continuous.h>
 
 #include "chorus.h"
 #include "noise_gate.h"
 
-#define INPUT_PIN 4
+#define INPUT_PIN 33
 #define SAMPLE_RATE 16000
+#define OS 16
 #define BAUD 921600
 #define BLOCK 64
 #define NBLK 32
+#define FRAME_SAMPLES 32
+#define FRAME_BYTES (FRAME_SAMPLES * OS * SOC_ADC_DIGI_RESULT_BYTES)
 #define STAT_HEADER 0xC1
-#define STAT_FIELDS 16
+#define STAT_FIELDS 19
 #define GATE_THRESHOLD 32
 #define CHORUS_MIX 0.6f
 #define CHORUS_DEPTH_MS 4
@@ -32,11 +35,11 @@
 #define FX_CHORUS 2
 
 struct Stats {
-  uint32_t max_late, late2, late10, late50, late10_start, dropped;
-  uint32_t read_min, read_max, read_sum, slack_min, fx_cycles_max, count;
+  uint32_t dropped, fx_cycles_max, produced, foreign;
 };
 
 static Stats st;
+static volatile uint32_t pool_ovf = 0;
 static uint8_t stat_pkt[2 + 2 * STAT_FIELDS];
 static volatile bool stat_ready = false;
 
@@ -45,28 +48,26 @@ static uint8_t scratch[BLOCK * 2];
 static volatile uint32_t wr = 0, rd = 0;
 static volatile bool tx_ready = false;
 
-static uint64_t start_us;
-static uint64_t n = 0;
+static adc_continuous_handle_t adc;
+static adc_channel_t channel;
 
 static NoiseGate gate;
 static Chorus chorus;
 static float dc = -1;
 static volatile uint32_t fx = 0;
 
-static void reset_stats() {
-  st = {};
-  st.read_min = st.slack_min = UINT32_MAX;
+static bool IRAM_ATTR on_pool_ovf(adc_continuous_handle_t, const adc_continuous_evt_data_t *, void *) {
+  pool_ovf = pool_ovf + 1;
+  return false;
 }
 
 static void build_stats() {
-  uint32_t read_mean10 = st.count ? (st.read_sum * 10 + st.count / 2) / st.count : 0;
-  const uint32_t f[STAT_FIELDS] = {st.max_late,     st.late2,   st.late10,   st.late50,
-                                   st.late10_start, st.dropped, st.read_min, read_mean10,
-                                   st.read_max,     st.slack_min, fx,
+  const uint32_t f[STAT_FIELDS] = {0, 0, 0, 0, 0, st.dropped, 0, 0, 0, 0, fx,
                                    (uint32_t)gate.get_threshold(), st.fx_cycles_max,
                                    (uint32_t)(chorus.mix * 100 + 0.5f),
                                    (uint32_t)(chorus.get_depth_ms() * 10 + 0.5f),
-                                   (uint32_t)(chorus.get_rate_hz() * 100 + 0.5f)};
+                                   (uint32_t)(chorus.get_rate_hz() * 100 + 0.5f),
+                                   pool_ovf, st.produced, st.foreign};
   stat_pkt[0] = STAT_HEADER;
   stat_pkt[1] = STAT_FIELDS;
   for (int i = 0; i < STAT_FIELDS; i++) {
@@ -74,7 +75,8 @@ static void build_stats() {
     stat_pkt[2 + 2 * i] = v >> 7;
     stat_pkt[3 + 2 * i] = v & 0x7F;
   }
-  reset_stats();
+  st = {};
+  pool_ovf = 0;
 }
 
 static IRAM_ATTR uint16_t process(uint16_t v) {
@@ -89,39 +91,6 @@ static IRAM_ATTR uint16_t process(uint16_t v) {
   if (!fx) return v;
   int out = (int)(dc + z + 0.5f);
   return out < 0 ? 0 : out > 4095 ? 4095 : out;
-}
-
-static IRAM_ATTR void sample_block(uint8_t *out) {
-  for (int i = 0; i < BLOCK; i++) {
-    int64_t target = start_us + (n++ * 1000000ULL) / SAMPLE_RATE;
-    int64_t wait_start = esp_timer_get_time();
-    int64_t now;
-    do {
-      now = esp_timer_get_time();
-    } while (now < target);
-
-    uint16_t v = analogRead(INPUT_PIN);
-    uint32_t read_us = esp_timer_get_time() - now;
-    uint32_t late = now - target;
-    uint32_t slack = now - wait_start;
-
-    st.max_late = max(st.max_late, late);
-    st.late2 += late > 2;
-    st.late10 += late > 10;
-    st.late50 += late > 50;
-    st.late10_start += late > 10 && i < 4;
-    st.read_min = min(st.read_min, read_us);
-    st.read_max = max(st.read_max, read_us);
-    st.read_sum += read_us;
-    st.slack_min = min(st.slack_min, slack);
-    st.count++;
-
-    uint32_t c0 = esp_cpu_get_cycle_count();
-    v = process(v);
-    st.fx_cycles_max = max(st.fx_cycles_max, esp_cpu_get_cycle_count() - c0);
-    out[2 * i] = 0x80 | (v >> 6);
-    out[2 * i + 1] = v & 0x3F;
-  }
 }
 
 static void tx_task(void *) {
@@ -159,30 +128,84 @@ static void tx_task(void *) {
   }
 }
 
+static void start_adc() {
+  adc_unit_t unit;
+  ESP_ERROR_CHECK(adc_continuous_io_to_channel(INPUT_PIN, &unit, &channel));
+  adc_continuous_handle_cfg_t hcfg = {};
+  hcfg.max_store_buf_size = FRAME_BYTES * 8;
+  hcfg.conv_frame_size = FRAME_BYTES;
+  ESP_ERROR_CHECK(adc_continuous_new_handle(&hcfg, &adc));
+
+  adc_digi_pattern_config_t pat = {};
+  pat.atten = ADC_ATTEN_DB_12;
+  pat.channel = channel;
+  pat.unit = ADC_UNIT_1;
+  pat.bit_width = SOC_ADC_DIGI_MAX_BITWIDTH;
+  adc_continuous_config_t cfg = {};
+  cfg.pattern_num = 1;
+  cfg.adc_pattern = &pat;
+  cfg.sample_freq_hz = SAMPLE_RATE * OS;
+  cfg.conv_mode = ADC_CONV_SINGLE_UNIT_1;
+  cfg.format = ADC_DIGI_OUTPUT_FORMAT_TYPE1;
+  ESP_ERROR_CHECK(adc_continuous_config(adc, &cfg));
+
+  adc_continuous_evt_cbs_t cbs = {};
+  cbs.on_pool_ovf = on_pool_ovf;
+  ESP_ERROR_CHECK(adc_continuous_register_event_callbacks(adc, &cbs, nullptr));
+  ESP_ERROR_CHECK(adc_continuous_start(adc));
+}
+
 void setup() {
-  analogReadResolution(12);
-  analogSetPinAttenuation(INPUT_PIN, ADC_11db);
   vTaskPrioritySet(nullptr, configMAX_PRIORITIES - 2);
-  reset_stats();
   gate.init(SAMPLE_RATE, GATE_THRESHOLD);
   chorus.init(SAMPLE_RATE, CHORUS_MIX, CHORUS_DEPTH_MS, CHORUS_RATE_HZ);
   xTaskCreatePinnedToCore(tx_task, "tx", 4096, nullptr, 5, nullptr, 0);
   while (!tx_ready) delay(1);
-  start_us = esp_timer_get_time();
+  start_adc();
 }
 
 void loop() {
+  static uint8_t buf[FRAME_BYTES];
+  static uint32_t sum = 0, in_group = 0, out_i = 0;
+  static int64_t t_stat = esp_timer_get_time();
+
   // Never returns: between loop() calls the Arduino core polls the serial port.
   for (;;) {
-    bool full = wr - rd >= NBLK;
-    sample_block(full ? scratch : ring[wr % NBLK]);
-    if (full) {
-      st.dropped++;
-    } else {
-      __sync_synchronize();
-      wr = wr + 1;
+    uint32_t got = 0;
+    if (adc_continuous_read(adc, buf, FRAME_BYTES, &got, 1000) != ESP_OK) continue;
+    for (uint32_t p = 0; p + SOC_ADC_DIGI_RESULT_BYTES <= got; p += SOC_ADC_DIGI_RESULT_BYTES) {
+      adc_digi_output_data_t *d = (adc_digi_output_data_t *)&buf[p];
+      if (d->type1.channel != channel) {
+        st.foreign++;
+        continue;
+      }
+      sum += d->type1.data;
+      if (++in_group < OS) continue;
+      uint16_t v = (sum + OS / 2) / OS;
+      sum = in_group = 0;
+
+      uint32_t c0 = esp_cpu_get_cycle_count();
+      v = process(v);
+      st.fx_cycles_max = max(st.fx_cycles_max, esp_cpu_get_cycle_count() - c0);
+
+      bool full = wr - rd >= NBLK;
+      uint8_t *out = full ? scratch : ring[wr % NBLK];
+      out[2 * out_i] = 0x80 | (v >> 6);
+      out[2 * out_i + 1] = v & 0x3F;
+      st.produced++;
+      if (++out_i == BLOCK) {
+        out_i = 0;
+        if (full) {
+          st.dropped++;
+        } else {
+          __sync_synchronize();
+          wr = wr + 1;
+        }
+      }
     }
-    if (st.count >= SAMPLE_RATE && !stat_ready) {
+    int64_t now = esp_timer_get_time();
+    if (now - t_stat >= 1000000 && !stat_ready) {
+      t_stat += 1000000;
       build_stats();
       __sync_synchronize();
       stat_ready = true;
