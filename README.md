@@ -22,7 +22,7 @@ Write-up of the project so far: [docs/article.md](docs/article.md) (draft).
 
 | Function | GPIO |
 | --- | --- |
-| Audio input (built-in ADC2) | 4 |
+| Audio input (built-in ADC1, continuous mode) | 33 |
 
 The pins for the PCM5102A, the buttons and the LEDs are not decided yet. GPIO12 is a boot strapping pin on the original ESP32.
 
@@ -43,11 +43,12 @@ Uses [PlatformIO](https://platformio.org/):
 ```sh
 pio run -t upload               # main firmware (src/main.cpp)
 pio run -e capture -t upload    # RAM capture test firmware (src/ram_capture.cpp)
+PLATFORMIO_BUILD_FLAGS=-DADC_PIN=33 pio run -e dma -t upload   # ADC1 DMA test firmware (src/dma_test.cpp)
 ```
 
 ## Listening and analysis tools
 
-The current firmware samples the ADC at 16 kHz and streams the raw samples to the PC over USB. The scripts in `tools/` play them back and analyze recordings:
+The current firmware samples GPIO33 with DMA at 256 kHz, averages each 16 conversions into one 16 kHz sample, and streams the raw samples to the PC over USB. The scripts in `tools/` play them back and analyze recordings:
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
@@ -60,6 +61,6 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 
 ## Status
 
-The analog input is built and characterized. With its input tied to a clean DC level, the built-in ADC alone reaches only about 55-60 dB of dynamic range, and each `analogRead` takes about 41 µs, which caps software sampling at about 20 kHz. Next step for this version: the PCM5102A output.
+The analog input is built and characterized. With its input tied to a clean DC level, the built-in ADC alone reaches only about 55-60 dB of dynamic range, and each `analogRead` takes about 41 µs, which caps software sampling at about 20 kHz. Continuous mode with DMA on GPIO33, averaging 16 conversions per sample, lowers the ADC hiss by about 4.5 dB and frees the CPU. Next step for this version: the PCM5102A output.
 
 A future version may replace the built-in ADC with an external audio ADC (such as the PCM1808) for a much better signal-to-noise ratio.
