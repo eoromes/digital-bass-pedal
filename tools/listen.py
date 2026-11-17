@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Receives the ESP32 audio stream (src/main.cpp) over serial and plays it.
+With the DMA firmware, the analogRead timing columns are always 0.
 
     .venv/bin/python tools/listen.py [--save file.wav]
 
@@ -33,7 +34,8 @@ STAT_NAMES = ("max_late_us", "late_over_2us", "late_over_10us", "late_over_50us"
               "late_over_10us_block_start", "dropped_blocks", "read_min_us",
               "read_mean_us_x10", "read_max_us", "min_slack_us", "effects",
               "gate_threshold_lsb", "fx_max_cycles",
-              "chorus_mix_x100", "chorus_depth_ms_x10", "chorus_rate_hz_x100")
+              "chorus_mix_x100", "chorus_depth_ms_x10", "chorus_rate_hz_x100",
+              "pool_overflows", "samples_per_s", "foreign_channel")
 DMA_STAT_NAMES = ("pin", "mean_of", "samples_per_s", "dropped_blocks",
                   "pool_overflows", "foreign_channel")
 FX_GATE = 1
