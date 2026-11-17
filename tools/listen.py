@@ -8,7 +8,9 @@ With --save, writes the values sent by the ESP32 to a WAV file
 an effect on, those are the processed values; the effects column says which.
 
 Keys: g toggles the noise gate, [ and ] change its threshold; c toggles the
-chorus, m/M d/D r/R lower/raise its mix, depth and rate; q quits.
+chorus, m/M d/D r/R lower/raise its mix, depth and rate; q quits. With the
+ADC1 DMA test firmware (src/dma_test.cpp), 0..4 average 1, 2, 4, 8 or 16
+conversions per sample; --send 2 sends a key at start.
 """
 
 import argparse
@@ -26,14 +28,17 @@ import sounddevice as sd
 RATE = 16000
 CALLBACK_FRAMES = 128
 STAT_HEADER = 0xC1
+DMA_STAT_HEADER = 0xC2
 STAT_NAMES = ("max_late_us", "late_over_2us", "late_over_10us", "late_over_50us",
               "late_over_10us_block_start", "dropped_blocks", "read_min_us",
               "read_mean_us_x10", "read_max_us", "min_slack_us", "effects",
               "gate_threshold_lsb", "fx_max_cycles",
               "chorus_mix_x100", "chorus_depth_ms_x10", "chorus_rate_hz_x100")
+DMA_STAT_NAMES = ("pin", "mean_of", "samples_per_s", "dropped_blocks",
+                  "pool_overflows", "foreign_channel")
 FX_GATE = 1
 FX_CHORUS = 2
-KEYS = b"g[]cmMdDrR"
+KEYS = b"g[]cmMdDrR01234"
 
 
 def open_serial(port, baud):
@@ -108,13 +113,14 @@ class TimingCSV:
 
     def __init__(self, path):
         self.path = path
+        self.names = STAT_NAMES
         self.file = None
         self.t0 = time.monotonic()
 
     def add(self, vals):
         n = len(vals)
         if self.file is None:
-            names = [STAT_NAMES[i] if i < len(STAT_NAMES) else f"field_{i}"
+            names = [self.names[i] if i < len(self.names) else f"field_{i}"
                      for i in range(n)]
             self.file = open(self.path, "w")
             self.file.write("t_s," + ",".join(names) + "\n")
@@ -134,6 +140,7 @@ def main():
     ap.add_argument("--gain", type=float, default=1.0)
     ap.add_argument("--latency", type=float, default=30, help="ms")
     ap.add_argument("--save", metavar="FILE.wav")
+    ap.add_argument("--send", default="", help="keys to send at start")
     args = ap.parse_args()
 
     fd = open_serial(args.port, args.baud)
@@ -146,13 +153,17 @@ def main():
         wav.setframerate(RATE)
         timing = TimingCSV(args.save.removesuffix(".wav") + ".timing.csv")
 
+    if args.send:
+        os.write(fd, args.send.encode())
+
     tty_attrs = None
     if sys.stdin.isatty():
         tty_attrs = termios.tcgetattr(sys.stdin)
         tty.setcbreak(sys.stdin)
         threading.Thread(target=forward_keys, args=(fd,), daemon=True).start()
 
-    high = stat = dc = fx = threshold = chorus = None
+    high = stat = dc = fx = threshold = chorus = dma = None
+    header = None
     lo, hi, sq, count = 4095, 0, 0.0, 0
     raw = array.array("h")
     t0 = time.monotonic()
@@ -168,13 +179,19 @@ def main():
             for b in data:
                 if b & 0x80:
                     vals = parse_stats(stat)
-                    if vals:
+                    if vals and header == DMA_STAT_HEADER:
+                        dma = vals
+                        if timing:
+                            timing.names = DMA_STAT_NAMES
+                            timing.add(vals)
+                    elif vals:
                         fx = vals[10] if len(vals) > 10 else None
                         threshold = vals[11] if len(vals) > 11 else None
                         chorus = vals[13:16] if len(vals) > 15 else None
                         if timing:
                             timing.add(vals)
-                    stat = [] if b == STAT_HEADER else None
+                    stat = [] if b in (STAT_HEADER, DMA_STAT_HEADER) else None
+                    header = b
                     high = b & 0x3F if b & 0xC0 == 0x80 else None
                     continue
                 if stat is not None:
@@ -197,6 +214,9 @@ def main():
             if time.monotonic() - t0 >= 1.0 and count:
                 gate = "" if fx is None else (f"  gate {'on' if fx & FX_GATE else 'off'} {threshold}"
                                          f"  chorus {'on' if fx & FX_CHORUS else 'off'}")
+                if dma:
+                    gate = (f"  GPIO{dma[0]} mean of {dma[1]}  {dma[2]} samples/s"
+                            f"  dropped {dma[3]} overflow {dma[4]} foreign {dma[5]}")
                 if chorus:
                     gate += (f" mix {chorus[0] / 100:.1f} depth {chorus[1] / 10:.1f} ms"
                              f" rate {chorus[2] / 100:.2f} Hz")
