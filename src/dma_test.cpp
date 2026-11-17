@@ -4,7 +4,7 @@
 // clock. The ESP32 can't run continuous mode below 20 kHz, so "1x" means one
 // conversion out of 16 at 256 kHz, not 16 kHz.
 //
-// Pin: ADC_PIN build flag (GPIO32-39). Keys '0'..'4' pick the mean of 2^k.
+// Pin: ADC_PIN build flag (GPIO32-39). Keys '0'..'6' pick the mean of 2^k, up to OS.
 //
 // Same sample format as main.cpp. Once per second: DMA_STAT_HEADER, field
 // count and 14-bit fields (pin, mean count, output samples in the last second,
@@ -16,7 +16,9 @@
 #define ADC_PIN 34
 #endif
 #define SAMPLE_RATE 16000
+#ifndef OS
 #define OS 16
+#endif
 #define BAUD 921600
 #define BLOCK 64
 #define NBLK 32
@@ -61,7 +63,7 @@ static void tx_task(void *) {
   for (;;) {
     while (Serial.available()) {
       int c = Serial.read();
-      if (c >= '0' && c <= '4') mean_n = 1u << (c - '0');
+      if (c >= '0' && c <= '6' && (1u << (c - '0')) <= OS) mean_n = 1u << (c - '0');
     }
     while (rd != wr) {
       __sync_synchronize();
