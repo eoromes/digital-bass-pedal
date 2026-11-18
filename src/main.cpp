@@ -1,17 +1,24 @@
-// Samples the bass at 16 kHz and streams it to the PC (tools/listen.py).
+// Samples the bass at 16 kHz, runs the effects, plays the result on the
+// PCM5102A DAC over I2S and streams it to the PC (tools/listen.py).
 // ADC1 runs in continuous mode with DMA on GPIO33 at 16 x 16 kHz, and each
 // output sample is the mean of 16 conversions. Of the ADC1 pins, GPIO33 had
 // the least hiss, and the mean of 16 brought it below analogRead (E18).
-// Core 1 reads the DMA frames and runs the effects; core 0 sends.
+// Core 1 reads the DMA frames, runs the effects and writes the DAC; core 0
+// sends to the PC.
+//
+// The DAC uses I2S1: on the original ESP32, ADC continuous mode takes I2S0.
+// Same sample on L and R. At power-up it plays a 1 s 440 Hz beep.
 //
 // Effects run per sample. Commands from the PC: 'g' toggles the noise gate,
 // '[' and ']' lower and raise its threshold, 'c' toggles the chorus; m/M, d/D
-// and r/R lower/raise its mix, depth and rate.
+// and r/R lower/raise its mix, depth and rate; 't' toggles the test tone,
+// 'v' and 'V' lower and raise the DAC volume in 6 dB steps.
 //
 // Sample: 10xxxxxx 0xxxxxxx (12 bits). Once per second: STAT_HEADER, field
 // count and 14-bit fields as two 0xxxxxxx bytes (see build_stats). Fields 0-4
 // and 6-9 were analogRead timing and are now always 0.
 #include <Arduino.h>
+#include <driver/i2s_std.h>
 #include <esp_adc/adc_continuous.h>
 
 #include "chorus.h"
@@ -25,8 +32,21 @@
 #define NBLK 32
 #define FRAME_SAMPLES 32
 #define FRAME_BYTES (FRAME_SAMPLES * OS * SOC_ADC_DIGI_RESULT_BYTES)
+#ifndef DAC_BCK
+#define DAC_BCK 18
+#endif
+#ifndef DAC_WS
+#define DAC_WS 19
+#endif
+#ifndef DAC_DOUT
+#define DAC_DOUT 23
+#endif
+#define DAC_DMA_BUFS 4
+#define OUT_GAIN_DB 0
+#define TONE_HZ 440
+#define TONE_LSB 256
 #define STAT_HEADER 0xC1
-#define STAT_FIELDS 19
+#define STAT_FIELDS 22
 #define GATE_THRESHOLD 32
 #define CHORUS_MIX 0.6f
 #define CHORUS_DEPTH_MS 4
@@ -35,7 +55,7 @@
 #define FX_CHORUS 2
 
 struct Stats {
-  uint32_t dropped, fx_cycles_max, produced, foreign;
+  uint32_t dropped, fx_cycles_max, produced, foreign, dac_short;
 };
 
 static Stats st;
@@ -56,6 +76,14 @@ static Chorus chorus;
 static float dc = -1;
 static volatile uint32_t fx = 0;
 
+static i2s_chan_handle_t dac;
+static int32_t dac_buf[FRAME_SAMPLES * 2];
+static float sine[256];
+static volatile int out_gain_db = OUT_GAIN_DB;
+static volatile float out_gain = 1.0f;
+static volatile bool test_tone = false;
+static uint32_t beep_left = SAMPLE_RATE;
+
 static bool IRAM_ATTR on_pool_ovf(adc_continuous_handle_t, const adc_continuous_evt_data_t *, void *) {
   pool_ovf = pool_ovf + 1;
   return false;
@@ -67,7 +95,8 @@ static void build_stats() {
                                    (uint32_t)(chorus.mix * 100 + 0.5f),
                                    (uint32_t)(chorus.get_depth_ms() * 10 + 0.5f),
                                    (uint32_t)(chorus.get_rate_hz() * 100 + 0.5f),
-                                   pool_ovf, st.produced, st.foreign};
+                                   pool_ovf, st.produced, st.foreign, st.dac_short,
+                                   (uint32_t)(out_gain_db + 24), test_tone};
   stat_pkt[0] = STAT_HEADER;
   stat_pkt[1] = STAT_FIELDS;
   for (int i = 0; i < STAT_FIELDS; i++) {
@@ -113,6 +142,11 @@ static void tx_task(void *) {
       if (c == 'D') chorus.set_depth_ms(chorus.get_depth_ms() + 0.5f);
       if (c == 'r') chorus.set_rate_hz(chorus.get_rate_hz() - 0.1f);
       if (c == 'R') chorus.set_rate_hz(chorus.get_rate_hz() + 0.1f);
+      if (c == 't') test_tone = !test_tone;
+      if ((c == 'v' && out_gain_db > -24) || (c == 'V' && out_gain_db < 12)) {
+        out_gain_db = out_gain_db + (c == 'V' ? 6 : -6);
+        out_gain = powf(10.0f, out_gain_db / 20.0f);
+      }
     }
     while (rd != wr) {
       __sync_synchronize();
@@ -155,8 +189,53 @@ static void start_adc() {
   ESP_ERROR_CHECK(adc_continuous_start(adc));
 }
 
+static void start_dac() {
+  i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
+  cc.dma_desc_num = DAC_DMA_BUFS;
+  cc.dma_frame_num = FRAME_SAMPLES;
+  cc.auto_clear = true;
+  ESP_ERROR_CHECK(i2s_new_channel(&cc, &dac, nullptr));
+
+  // 32-bit slots: BCK = 64 x fs, a ratio the PCM5102A PLL accepts without SCK.
+  i2s_std_config_t sc = {};
+  sc.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE);
+  sc.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
+  sc.gpio_cfg.mclk = I2S_GPIO_UNUSED;
+  sc.gpio_cfg.bclk = (gpio_num_t)DAC_BCK;
+  sc.gpio_cfg.ws = (gpio_num_t)DAC_WS;
+  sc.gpio_cfg.dout = (gpio_num_t)DAC_DOUT;
+  sc.gpio_cfg.din = I2S_GPIO_UNUSED;
+  ESP_ERROR_CHECK(i2s_channel_init_std_mode(dac, &sc));
+  ESP_ERROR_CHECK(i2s_channel_enable(dac));
+}
+
+static void write_dac(uint16_t v) {
+  static uint32_t n = 0, phase = 0;
+  if (!dac) return;
+  float y = v - dc;
+  if (test_tone || beep_left) {
+    y = TONE_LSB * sine[phase >> 24];
+    phase += (uint32_t)(4294967296.0 * TONE_HZ / SAMPLE_RATE);
+    if (beep_left) beep_left--;
+  }
+  // One ADC LSB = 2^20 in the 32-bit slot, so ADC full scale is DAC full scale.
+  float s = y * out_gain * 1048576.0f;
+  s = s > 2147483520.0f ? 2147483520.0f : s < -2147483520.0f ? -2147483520.0f : s;
+  dac_buf[2 * n] = dac_buf[2 * n + 1] = (int32_t)s;
+  if (++n < FRAME_SAMPLES) return;
+  n = 0;
+  size_t written = 0;
+  i2s_channel_write(dac, dac_buf, sizeof(dac_buf), &written, 20);
+  if (written != sizeof(dac_buf)) st.dac_short++;
+}
+
 void setup() {
   vTaskPrioritySet(nullptr, configMAX_PRIORITIES - 2);
+  for (int i = 0; i < 256; i++) sine[i] = sinf(2 * PI * i / 256);
+  out_gain = powf(10.0f, out_gain_db / 20.0f);
+#ifndef NO_DAC
+  start_dac();
+#endif
   gate.init(SAMPLE_RATE, GATE_THRESHOLD);
   chorus.init(SAMPLE_RATE, CHORUS_MIX, CHORUS_DEPTH_MS, CHORUS_RATE_HZ);
   xTaskCreatePinnedToCore(tx_task, "tx", 4096, nullptr, 5, nullptr, 0);
@@ -187,6 +266,7 @@ void loop() {
       uint32_t c0 = esp_cpu_get_cycle_count();
       v = process(v);
       st.fx_cycles_max = max(st.fx_cycles_max, esp_cpu_get_cycle_count() - c0);
+      write_dac(v);
 
       bool full = wr - rd >= NBLK;
       uint8_t *out = full ? scratch : ring[wr % NBLK];
