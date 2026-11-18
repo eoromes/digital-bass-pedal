@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Receives the ESP32 audio stream (src/main.cpp) over serial and plays it.
-With the DMA firmware, the analogRead timing columns are always 0.
+"""Receives the ESP32 stream (src/main.cpp) over serial, shows the input
+level and what is on, and forwards keys to the ESP32. The ESP32 plays the
+audio on its DAC; --play also plays it on the PC. With the DMA firmware, the
+analogRead timing columns are always 0.
 
-    .venv/bin/python tools/listen.py [--save file.wav]
+    .venv/bin/python tools/listen.py [--play] [--save file.wav]
 
 With --save, writes the values sent by the ESP32 to a WAV file
 (sample = (value - 2048) * 16) and the firmware stats to file.timing.csv. With
@@ -25,8 +27,6 @@ import time
 import tty
 import wave
 
-import sounddevice as sd
-
 RATE = 16000
 CALLBACK_FRAMES = 128
 STAT_HEADER = 0xC1
@@ -43,6 +43,16 @@ DMA_STAT_NAMES = ("pin", "mean_of", "samples_per_s", "dropped_blocks",
 FX_GATE = 1
 FX_CHORUS = 2
 KEYS = b"g[]cmMdDrRtvV0123456"
+HELP = """keys:
+  g      noise gate on/off        [ ]  gate threshold -/+
+  c      chorus on/off            m M  chorus mix -/+
+  d D    chorus depth -/+         r R  chorus rate -/+
+  t      DAC test tone on/off     v V  DAC volume -/+ 6 dB
+  q      quit"""
+
+
+def on(flag):
+    return "ON " if flag else "off"
 
 
 def open_serial(port, baud):
@@ -66,6 +76,7 @@ class Player:
         self.buf = bytearray()
         self.lock = threading.Lock()
         self.playing = False
+        import sounddevice as sd
         # latency="low" (8 ms) played only ~40% of the samples on this PC.
         self.stream = sd.RawOutputStream(samplerate=RATE, channels=1, dtype="int16",
                                          blocksize=CALLBACK_FRAMES, latency=0.02,
@@ -141,14 +152,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", default="/dev/ttyUSB0")
     ap.add_argument("--baud", type=int, default=921600)
-    ap.add_argument("--gain", type=float, default=1.0)
+    ap.add_argument("--play", action="store_true", help="also play on the PC")
+    ap.add_argument("--gain", type=float, default=1.0, help="PC playback gain")
     ap.add_argument("--latency", type=float, default=30, help="ms")
     ap.add_argument("--save", metavar="FILE.wav")
     ap.add_argument("--send", default="", help="keys to send at start")
     args = ap.parse_args()
 
     fd = open_serial(args.port, args.baud)
-    player = Player(args.latency)
+    player = Player(args.latency) if args.play else None
     wav = timing = None
     if args.save:
         wav = wave.open(args.save, "wb")
@@ -165,6 +177,7 @@ def main():
         tty_attrs = termios.tcgetattr(sys.stdin)
         tty.setcbreak(sys.stdin)
         threading.Thread(target=forward_keys, args=(fd,), daemon=True).start()
+        print(HELP, flush=True)
 
     high = stat = dc = fx = threshold = chorus = dma = dac = None
     header = None
@@ -214,21 +227,27 @@ def main():
                 raw.append((v - 2048) * 16)
                 out.append(int(max(-32768, min(32767, (v - dc) * 16 * args.gain))))
 
-            player.write(out.tobytes())
+            if player:
+                player.write(out.tobytes())
 
             if time.monotonic() - t0 >= 1.0 and count:
-                gate = "" if fx is None else (f"  gate {'on' if fx & FX_GATE else 'off'} {threshold}"
-                                         f"  chorus {'on' if fx & FX_CHORUS else 'off'}")
+                parts = [f"raw {lo:4d}..{hi:4d}  rms {(sq / count) ** 0.5:5.1f}"]
                 if dma:
-                    gate = (f"  GPIO{dma[0]} mean of {dma[1]}  {dma[2]} samples/s"
-                            f"  dropped {dma[3]} overflow {dma[4]} foreign {dma[5]}")
-                if chorus:
-                    gate += (f" mix {chorus[0] / 100:.1f} depth {chorus[1] / 10:.1f} ms"
-                             f" rate {chorus[2] / 100:.2f} Hz")
+                    parts.append(f"GPIO{dma[0]} mean of {dma[1]}  {dma[2]} samples/s"
+                                 f"  dropped {dma[3]} overflow {dma[4]} foreign {dma[5]}")
+                if fx is not None:
+                    parts.append(f"gate {on(fx & FX_GATE)} thr {threshold}")
+                    c = f"chorus {on(fx & FX_CHORUS)}"
+                    if chorus:
+                        c += (f" mix {chorus[0] / 100:.1f} depth {chorus[1] / 10:.1f} ms"
+                              f" rate {chorus[2] / 100:.2f} Hz")
+                    parts.append(c)
                 if dac:
-                    gate += (f"  dac {dac[1] - 24:+d} dB{' tone' if dac[2] else ''}"
-                             f"{f' short {dac[0]}' if dac[0] else ''}")
-                print(f"raw {lo:4d}..{hi:4d}  rms {(sq / count) ** 0.5:5.1f}{gate}", flush=True)
+                    d = f"tone {on(dac[2])} | volume {dac[1] - 24:+d} dB"
+                    if dac[0]:
+                        d += f" | dac short writes {dac[0]}"
+                    parts.append(d)
+                print(" | ".join(parts), flush=True)
                 lo, hi, sq, count, t0 = 4095, 0, 0.0, 0, time.monotonic()
                 if wav:
                     wav.writeframes(raw.tobytes())
@@ -236,7 +255,8 @@ def main():
     finally:
         if tty_attrs:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, tty_attrs)
-        player.close()
+        if player:
+            player.close()
         if wav:
             wav.writeframes(raw.tobytes())
             wav.close()
