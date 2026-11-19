@@ -7,13 +7,14 @@
 // sends to the PC.
 //
 // The DAC uses I2S1: on the original ESP32, ADC continuous mode takes I2S0.
-// Same sample on L and R. At power-up it plays a 1 s 440 Hz beep.
+// Same sample on L and R. GPIO12 (BCK) is a strapping pin; the PCM5102A input
+// doesn't pull it up, so the board still boots.
 //
-// Effects run per sample. Commands from the PC: 'g' toggles the noise gate,
-// '[' and ']' lower and raise its threshold, 'c' toggles the chorus; m/M, d/D
-// and r/R lower/raise its mix, depth and rate; 'f' toggles the 4.5 kHz
-// low-pass; 't' toggles the test tone,
-// 'v' and 'V' lower and raise the DAC volume in 6 dB steps.
+// Effects run per sample, in this order: noise gate, auto-wah, distortion,
+// chorus. Commands from the PC: 'g' toggles the gate, '[' and ']' lower and
+// raise its threshold; 'w' toggles the auto-wah, 's'/'S' lower/raise its
+// sensitivity; 'o' toggles the distortion, 'k'/'K' lower/raise its drive;
+// 'c' toggles the chorus, m/M, d/D and r/R lower/raise its mix, depth and rate.
 //
 // Sample: 10xxxxxx 0xxxxxxx (12 bits). Once per second: STAT_HEADER, field
 // count and 14-bit fields as two 0xxxxxxx bytes (see build_stats). Fields 0-4
@@ -22,8 +23,9 @@
 #include <driver/i2s_std.h>
 #include <esp_adc/adc_continuous.h>
 
+#include "autowah.h"
 #include "chorus.h"
-#include "lowpass.h"
+#include "distortion.h"
 #include "noise_gate.h"
 
 #define INPUT_PIN 33
@@ -35,18 +37,15 @@
 #define FRAME_SAMPLES 32
 #define FRAME_BYTES (FRAME_SAMPLES * OS * SOC_ADC_DIGI_RESULT_BYTES)
 #ifndef DAC_BCK
-#define DAC_BCK 18
+#define DAC_BCK 12
 #endif
 #ifndef DAC_WS
-#define DAC_WS 19
+#define DAC_WS 13
 #endif
 #ifndef DAC_DOUT
-#define DAC_DOUT 23
+#define DAC_DOUT 14
 #endif
 #define DAC_DMA_BUFS 4
-#define OUT_GAIN_DB 0
-#define TONE_HZ 440
-#define TONE_LSB 256
 #define STAT_HEADER 0xC1
 #define STAT_FIELDS 22
 #define GATE_THRESHOLD 32
@@ -55,8 +54,10 @@
 #define CHORUS_RATE_HZ 0.8f
 #define FX_GATE 1
 #define FX_CHORUS 2
-#define FX_LOWPASS 4
-#define LOWPASS_HZ 4500
+#define FX_WAH 4
+#define FX_DIST 8
+#define WAH_SENSITIVITY 1.5f
+#define DIST_DRIVE_DB 20
 
 struct Stats {
   uint32_t dropped, fx_cycles_max, produced, foreign, dac_short;
@@ -77,17 +78,13 @@ static adc_channel_t channel;
 
 static NoiseGate gate;
 static Chorus chorus;
-static LowPass lowpass;
+static AutoWah wah;
+static Distortion dist;
 static float dc = -1;
 static volatile uint32_t fx = 0;
 
 static i2s_chan_handle_t dac;
 static int32_t dac_buf[FRAME_SAMPLES * 2];
-static float sine[256];
-static volatile int out_gain_db = OUT_GAIN_DB;
-static volatile float out_gain = 1.0f;
-static volatile bool test_tone = false;
-static uint32_t beep_left = SAMPLE_RATE;
 
 static bool IRAM_ATTR on_pool_ovf(adc_continuous_handle_t, const adc_continuous_evt_data_t *, void *) {
   pool_ovf = pool_ovf + 1;
@@ -101,7 +98,8 @@ static void build_stats() {
                                    (uint32_t)(chorus.get_depth_ms() * 10 + 0.5f),
                                    (uint32_t)(chorus.get_rate_hz() * 100 + 0.5f),
                                    pool_ovf, st.produced, st.foreign, st.dac_short,
-                                   (uint32_t)(out_gain_db + 24), test_tone};
+                                   (uint32_t)(dist.get_drive_db() + 0.5f),
+                                   (uint32_t)(wah.get_sensitivity() * 10 + 0.5f)};
   stat_pkt[0] = STAT_HEADER;
   stat_pkt[1] = STAT_FIELDS;
   for (int i = 0; i < STAT_FIELDS; i++) {
@@ -120,12 +118,14 @@ static IRAM_ATTR uint16_t process(uint16_t v) {
   float x = v - dc;
   float y = gate.process(x);
   if (!(fx & FX_GATE)) y = x;
-  float z = chorus.process(y);
-  if (!(fx & FX_CHORUS)) z = y;
-  float w = lowpass.process(z);
-  if (!(fx & FX_LOWPASS)) w = z;
+  float a = wah.process(y);
+  if (!(fx & FX_WAH)) a = y;
+  float b = dist.process(a);
+  if (!(fx & FX_DIST)) b = a;
+  float z = chorus.process(b);
+  if (!(fx & FX_CHORUS)) z = b;
   if (!fx) return v;
-  int out = (int)(dc + w + 0.5f);
+  int out = (int)(dc + z + 0.5f);
   return out < 0 ? 0 : out > 4095 ? 4095 : out;
 }
 
@@ -139,7 +139,12 @@ static void tx_task(void *) {
       int c = Serial.read();
       if (c == 'g') fx = fx ^ FX_GATE;
       if (c == 'c') fx = fx ^ FX_CHORUS;
-      if (c == 'f') fx = fx ^ FX_LOWPASS;
+      if (c == 'w') fx = fx ^ FX_WAH;
+      if (c == 'o') fx = fx ^ FX_DIST;
+      if (c == 's') wah.set_sensitivity(wah.get_sensitivity() - 0.5f);
+      if (c == 'S') wah.set_sensitivity(wah.get_sensitivity() + 0.5f);
+      if (c == 'k') dist.set_drive_db(dist.get_drive_db() - 3);
+      if (c == 'K') dist.set_drive_db(dist.get_drive_db() + 3);
       float t = gate.get_threshold();
       if (c == '[' && t > 2) gate.set_threshold(t - 2);
       if (c == ']' && t < 60) gate.set_threshold(t + 2);
@@ -150,11 +155,6 @@ static void tx_task(void *) {
       if (c == 'D') chorus.set_depth_ms(chorus.get_depth_ms() + 0.5f);
       if (c == 'r') chorus.set_rate_hz(chorus.get_rate_hz() - 0.1f);
       if (c == 'R') chorus.set_rate_hz(chorus.get_rate_hz() + 0.1f);
-      if (c == 't') test_tone = !test_tone;
-      if ((c == 'v' && out_gain_db > -24) || (c == 'V' && out_gain_db < 12)) {
-        out_gain_db = out_gain_db + (c == 'V' ? 6 : -6);
-        out_gain = powf(10.0f, out_gain_db / 20.0f);
-      }
     }
     while (rd != wr) {
       __sync_synchronize();
@@ -218,16 +218,10 @@ static void start_dac() {
 }
 
 static void write_dac(uint16_t v) {
-  static uint32_t n = 0, phase = 0;
+  static uint32_t n = 0;
   if (!dac) return;
-  float y = v - dc;
-  if (test_tone || beep_left) {
-    y = TONE_LSB * sine[phase >> 24];
-    phase += (uint32_t)(4294967296.0 * TONE_HZ / SAMPLE_RATE);
-    if (beep_left) beep_left--;
-  }
   // One ADC LSB = 2^20 in the 32-bit slot, so ADC full scale is DAC full scale.
-  float s = y * out_gain * 1048576.0f;
+  float s = (v - dc) * 1048576.0f;
   s = s > 2147483520.0f ? 2147483520.0f : s < -2147483520.0f ? -2147483520.0f : s;
   dac_buf[2 * n] = dac_buf[2 * n + 1] = (int32_t)s;
   if (++n < FRAME_SAMPLES) return;
@@ -239,14 +233,13 @@ static void write_dac(uint16_t v) {
 
 void setup() {
   vTaskPrioritySet(nullptr, configMAX_PRIORITIES - 2);
-  for (int i = 0; i < 256; i++) sine[i] = sinf(2 * PI * i / 256);
-  out_gain = powf(10.0f, out_gain_db / 20.0f);
 #ifndef NO_DAC
   start_dac();
 #endif
   gate.init(SAMPLE_RATE, GATE_THRESHOLD);
   chorus.init(SAMPLE_RATE, CHORUS_MIX, CHORUS_DEPTH_MS, CHORUS_RATE_HZ);
-  lowpass.init(SAMPLE_RATE, LOWPASS_HZ);
+  wah.init(SAMPLE_RATE, WAH_SENSITIVITY);
+  dist.init(SAMPLE_RATE, DIST_DRIVE_DB);
   xTaskCreatePinnedToCore(tx_task, "tx", 4096, nullptr, 5, nullptr, 0);
   while (!tx_ready) delay(1);
   start_adc();
