@@ -11,9 +11,9 @@ With --save, writes the values sent by the ESP32 to a WAV file
 an effect on, those are the processed values; the effects column says which.
 
 Keys: g toggles the noise gate, [ and ] change its threshold; c toggles the
-chorus, m/M d/D r/R lower/raise its mix, depth and rate; f toggles the
-low-pass; t toggles the DAC
-test tone, v/V lower/raise the DAC volume; q quits. With the ADC1 DMA test
+chorus, m/M d/D r/R lower/raise its mix, depth and rate; w toggles the
+auto-wah, s/S its sensitivity; o toggles the distortion, k/K its drive;
+q quits. With the ADC1 DMA test
 firmware (src/dma_test.cpp), 0..6 average 1 to 64 conversions per sample;
 --send 2 sends a key at start.
 """
@@ -38,19 +38,20 @@ STAT_NAMES = ("max_late_us", "late_over_2us", "late_over_10us", "late_over_50us"
               "gate_threshold_lsb", "fx_max_cycles",
               "chorus_mix_x100", "chorus_depth_ms_x10", "chorus_rate_hz_x100",
               "pool_overflows", "samples_per_s", "foreign_channel",
-              "dac_short_writes", "dac_gain_db_plus_24", "dac_tone")
+              "dac_short_writes", "dist_drive_db", "wah_sensitivity_x10")
 DMA_STAT_NAMES = ("pin", "mean_of", "samples_per_s", "dropped_blocks",
                   "pool_overflows", "foreign_channel")
 FX_GATE = 1
 FX_CHORUS = 2
-FX_LOWPASS = 4
-KEYS = b"g[]cmMdDrRftvV0123456"
+FX_WAH = 4
+FX_DIST = 8
+KEYS = b"g[]cmMdDrRwsSokK0123456"
 HELP = """keys:
   g      noise gate on/off        [ ]  gate threshold -/+
+  w      auto-wah on/off          s S  wah sensitivity -/+
+  o      distortion on/off        k K  distortion drive -/+ 3 dB
   c      chorus on/off            m M  chorus mix -/+
   d D    chorus depth -/+         r R  chorus rate -/+
-  f      low-pass 4.5 kHz on/off
-  t      DAC test tone on/off     v V  DAC volume -/+ 6 dB
   q      quit"""
 
 
@@ -240,17 +241,16 @@ def main():
                                  f"  dropped {dma[3]} overflow {dma[4]} foreign {dma[5]}")
                 if fx is not None:
                     parts.append(f"gate {on(fx & FX_GATE)} thr {threshold}")
+                    if dac:
+                        parts.append(f"wah {on(fx & FX_WAH)} sens {dac[2] / 10:.1f}")
+                        parts.append(f"dist {on(fx & FX_DIST)} drive {dac[1]} dB")
                     c = f"chorus {on(fx & FX_CHORUS)}"
                     if chorus:
                         c += (f" mix {chorus[0] / 100:.1f} depth {chorus[1] / 10:.1f} ms"
                               f" rate {chorus[2] / 100:.2f} Hz")
                     parts.append(c)
-                    parts.append(f"low-pass {on(fx & FX_LOWPASS)}")
-                if dac:
-                    d = f"tone {on(dac[2])} | volume {dac[1] - 24:+d} dB"
-                    if dac[0]:
-                        d += f" | dac short writes {dac[0]}"
-                    parts.append(d)
+                if dac and dac[0]:
+                    parts.append(f"dac short writes {dac[0]}")
                 print(" | ".join(parts), flush=True)
                 lo, hi, sq, count, t0 = 4095, 0, 0.0, 0, time.monotonic()
                 if wav:
