@@ -2,16 +2,20 @@
 
 #include <math.h>
 
-// Envelope filter (auto-wah) for bass: a resonant low-pass (Chamberlin state
-// variable filter) whose cutoff follows the playing level, from 200 Hz when
-// quiet to 2 kHz on a hard attack. A low-pass keeps the fundamental, which
-// a band-pass would thin out. Input and output in ADC LSB around the rest
-// level.
+// Envelope filter (auto-wah) for bass: a resonant band-pass (Chamberlin state
+// variable filter) whose centre follows the playing level, from 120 Hz when
+// quiet to 900 Hz on a hard attack, mixed with some of the dry signal to keep
+// the fundamental. Input and output in ADC LSB around the rest level.
+//
+// Tuned on a recorded take: a sweep up to 2 kHz, or a low-pass response,
+// barely changed the sound, because almost all of the bass energy is below
+// ~500 Hz. The band-pass alone is ~19x quieter than the input, hence WET.
 class AutoWah {
  public:
-  static constexpr float F_MIN = 200.0f, F_MAX = 2000.0f, Q_INV = 1.0f / 4.0f;
+  static constexpr float F_MIN = 120.0f, F_MAX = 900.0f, Q_INV = 1.0f / 5.0f;
+  static constexpr float DRY = 0.3f, WET = 10.0f;
   // At sensitivity 1, an envelope of FULL_LSB opens the filter fully. With
-  // 0.7, a recorded bass take swept 210 Hz to 1.85 kHz (10th-90th percentile).
+  // 0.7, the recorded take swept 124 Hz to 800 Hz (10th-90th percentile).
   static constexpr float FULL_LSB = 400.0f;
 
   void init(float rate, float sensitivity) {
@@ -38,7 +42,7 @@ class AutoWah {
     low += f * band;
     float high = x - low - Q_INV * band;
     band += f * high;
-    return low;
+    return DRY * x + WET * Q_INV * band;
   }
 
  private:
