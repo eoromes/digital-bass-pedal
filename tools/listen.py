@@ -38,7 +38,7 @@ STAT_NAMES = ("max_late_us", "late_over_2us", "late_over_10us", "late_over_50us"
               "gate_threshold_lsb", "fx_max_cycles",
               "chorus_mix_x100", "chorus_depth_ms_x10", "chorus_rate_hz_x100",
               "pool_overflows", "samples_per_s", "foreign_channel",
-              "dac_short_writes", "dist_drive_db", "wah_sensitivity_x10")
+              "dac_short_writes", "dist_drive_db", "wah_sensitivity_x100")
 DMA_STAT_NAMES = ("pin", "mean_of", "samples_per_s", "dropped_blocks",
                   "pool_overflows", "foreign_channel")
 FX_GATE = 1
@@ -242,7 +242,7 @@ def main():
                 if fx is not None:
                     parts.append(f"gate {on(fx & FX_GATE)} thr {threshold}")
                     if dac:
-                        parts.append(f"wah {on(fx & FX_WAH)} sens {dac[2] / 10:.1f}")
+                        parts.append(f"wah {on(fx & FX_WAH)} sens {dac[2] / 100:.2f}")
                         parts.append(f"dist {on(fx & FX_DIST)} drive {dac[1]} dB")
                     c = f"chorus {on(fx & FX_CHORUS)}"
                     if chorus:

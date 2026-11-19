@@ -3,13 +3,15 @@
 #include <math.h>
 
 // Envelope filter (auto-wah) for bass: a resonant low-pass (Chamberlin state
-// variable filter) whose cutoff follows the playing level, from 150 Hz when
-// quiet to 1.5 kHz on a hard attack. A low-pass keeps the fundamental, which
+// variable filter) whose cutoff follows the playing level, from 200 Hz when
+// quiet to 2 kHz on a hard attack. A low-pass keeps the fundamental, which
 // a band-pass would thin out. Input and output in ADC LSB around the rest
 // level.
 class AutoWah {
  public:
-  static constexpr float F_MIN = 150.0f, F_MAX = 1500.0f, Q_INV = 1.0f / 3.0f;
+  static constexpr float F_MIN = 200.0f, F_MAX = 2000.0f, Q_INV = 1.0f / 4.0f;
+  // At sensitivity 1, an envelope of FULL_LSB opens the filter fully. With
+  // 0.7, a recorded bass take swept 210 Hz to 1.85 kHz (10th-90th percentile).
   static constexpr float FULL_LSB = 400.0f;
 
   void init(float rate, float sensitivity) {
@@ -21,7 +23,7 @@ class AutoWah {
   }
 
   void set_sensitivity(float s) {
-    sens = s < 0.5f ? 0.5f : s > 4.0f ? 4.0f : s;
+    sens = s < 0.2f ? 0.2f : s > 2.0f ? 2.0f : s;
     scale = sens / FULL_LSB;
   }
 

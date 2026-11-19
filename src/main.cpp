@@ -56,7 +56,7 @@
 #define FX_CHORUS 2
 #define FX_WAH 4
 #define FX_DIST 8
-#define WAH_SENSITIVITY 1.5f
+#define WAH_SENSITIVITY 0.7f
 #define DIST_DRIVE_DB 20
 
 struct Stats {
@@ -99,7 +99,7 @@ static void build_stats() {
                                    (uint32_t)(chorus.get_rate_hz() * 100 + 0.5f),
                                    pool_ovf, st.produced, st.foreign, st.dac_short,
                                    (uint32_t)(dist.get_drive_db() + 0.5f),
-                                   (uint32_t)(wah.get_sensitivity() * 10 + 0.5f)};
+                                   (uint32_t)(wah.get_sensitivity() * 100 + 0.5f)};
   stat_pkt[0] = STAT_HEADER;
   stat_pkt[1] = STAT_FIELDS;
   for (int i = 0; i < STAT_FIELDS; i++) {
@@ -141,8 +141,8 @@ static void tx_task(void *) {
       if (c == 'c') fx = fx ^ FX_CHORUS;
       if (c == 'w') fx = fx ^ FX_WAH;
       if (c == 'o') fx = fx ^ FX_DIST;
-      if (c == 's') wah.set_sensitivity(wah.get_sensitivity() - 0.5f);
-      if (c == 'S') wah.set_sensitivity(wah.get_sensitivity() + 0.5f);
+      if (c == 's') wah.set_sensitivity(wah.get_sensitivity() * 0.8f);
+      if (c == 'S') wah.set_sensitivity(wah.get_sensitivity() * 1.25f);
       if (c == 'k') dist.set_drive_db(dist.get_drive_db() - 3);
       if (c == 'K') dist.set_drive_db(dist.get_drive_db() + 3);
       float t = gate.get_threshold();
