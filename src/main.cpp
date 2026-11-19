@@ -7,8 +7,8 @@
 // sends to the PC.
 //
 // The DAC uses I2S1: on the original ESP32, ADC continuous mode takes I2S0.
-// Same sample on L and R. GPIO12 (BCK) is a strapping pin; the PCM5102A input
-// doesn't pull it up, so the board still boots.
+// Same sample on L and R. The I2S pins (18/19/23) are on the other side of
+// the board from the ADC input (GPIO33).
 //
 // Effects run per sample, in this order: noise gate, auto-wah, distortion,
 // chorus. Commands from the PC: 'g' toggles the gate, '[' and ']' lower and
@@ -37,13 +37,13 @@
 #define FRAME_SAMPLES 32
 #define FRAME_BYTES (FRAME_SAMPLES * OS * SOC_ADC_DIGI_RESULT_BYTES)
 #ifndef DAC_BCK
-#define DAC_BCK 12
+#define DAC_BCK 18
 #endif
 #ifndef DAC_WS
-#define DAC_WS 13
+#define DAC_WS 19
 #endif
 #ifndef DAC_DOUT
-#define DAC_DOUT 14
+#define DAC_DOUT 23
 #endif
 #define DAC_DMA_BUFS 4
 #define STAT_HEADER 0xC1
