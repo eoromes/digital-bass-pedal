@@ -11,7 +11,8 @@
 //
 // Effects run per sample. Commands from the PC: 'g' toggles the noise gate,
 // '[' and ']' lower and raise its threshold, 'c' toggles the chorus; m/M, d/D
-// and r/R lower/raise its mix, depth and rate; 't' toggles the test tone,
+// and r/R lower/raise its mix, depth and rate; 'f' toggles the 4.5 kHz
+// low-pass; 't' toggles the test tone,
 // 'v' and 'V' lower and raise the DAC volume in 6 dB steps.
 //
 // Sample: 10xxxxxx 0xxxxxxx (12 bits). Once per second: STAT_HEADER, field
@@ -22,6 +23,7 @@
 #include <esp_adc/adc_continuous.h>
 
 #include "chorus.h"
+#include "lowpass.h"
 #include "noise_gate.h"
 
 #define INPUT_PIN 33
@@ -53,6 +55,8 @@
 #define CHORUS_RATE_HZ 0.8f
 #define FX_GATE 1
 #define FX_CHORUS 2
+#define FX_LOWPASS 4
+#define LOWPASS_HZ 4500
 
 struct Stats {
   uint32_t dropped, fx_cycles_max, produced, foreign, dac_short;
@@ -73,6 +77,7 @@ static adc_channel_t channel;
 
 static NoiseGate gate;
 static Chorus chorus;
+static LowPass lowpass;
 static float dc = -1;
 static volatile uint32_t fx = 0;
 
@@ -111,14 +116,16 @@ static void build_stats() {
 static IRAM_ATTR uint16_t process(uint16_t v) {
   if (dc < 0) dc = v;
   dc += (v - dc) * 0.0005f;
-  // Both always run, so the cost doesn't depend on which ones are on.
+  // All always run, so the cost doesn't depend on which ones are on.
   float x = v - dc;
   float y = gate.process(x);
   if (!(fx & FX_GATE)) y = x;
   float z = chorus.process(y);
   if (!(fx & FX_CHORUS)) z = y;
+  float w = lowpass.process(z);
+  if (!(fx & FX_LOWPASS)) w = z;
   if (!fx) return v;
-  int out = (int)(dc + z + 0.5f);
+  int out = (int)(dc + w + 0.5f);
   return out < 0 ? 0 : out > 4095 ? 4095 : out;
 }
 
@@ -132,6 +139,7 @@ static void tx_task(void *) {
       int c = Serial.read();
       if (c == 'g') fx = fx ^ FX_GATE;
       if (c == 'c') fx = fx ^ FX_CHORUS;
+      if (c == 'f') fx = fx ^ FX_LOWPASS;
       float t = gate.get_threshold();
       if (c == '[' && t > 2) gate.set_threshold(t - 2);
       if (c == ']' && t < 60) gate.set_threshold(t + 2);
@@ -238,6 +246,7 @@ void setup() {
 #endif
   gate.init(SAMPLE_RATE, GATE_THRESHOLD);
   chorus.init(SAMPLE_RATE, CHORUS_MIX, CHORUS_DEPTH_MS, CHORUS_RATE_HZ);
+  lowpass.init(SAMPLE_RATE, LOWPASS_HZ);
   xTaskCreatePinnedToCore(tx_task, "tx", 4096, nullptr, 5, nullptr, 0);
   while (!tx_ready) delay(1);
   start_adc();
