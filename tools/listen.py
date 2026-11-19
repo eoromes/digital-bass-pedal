@@ -11,7 +11,8 @@ With --save, writes the values sent by the ESP32 to a WAV file
 an effect on, those are the processed values; the effects column says which.
 
 Keys: g toggles the noise gate, [ and ] change its threshold; c toggles the
-chorus, m/M d/D r/R lower/raise its mix, depth and rate; t toggles the DAC
+chorus, m/M d/D r/R lower/raise its mix, depth and rate; f toggles the
+low-pass; t toggles the DAC
 test tone, v/V lower/raise the DAC volume; q quits. With the ADC1 DMA test
 firmware (src/dma_test.cpp), 0..6 average 1 to 64 conversions per sample;
 --send 2 sends a key at start.
@@ -42,11 +43,13 @@ DMA_STAT_NAMES = ("pin", "mean_of", "samples_per_s", "dropped_blocks",
                   "pool_overflows", "foreign_channel")
 FX_GATE = 1
 FX_CHORUS = 2
-KEYS = b"g[]cmMdDrRtvV0123456"
+FX_LOWPASS = 4
+KEYS = b"g[]cmMdDrRftvV0123456"
 HELP = """keys:
   g      noise gate on/off        [ ]  gate threshold -/+
   c      chorus on/off            m M  chorus mix -/+
   d D    chorus depth -/+         r R  chorus rate -/+
+  f      low-pass 4.5 kHz on/off
   t      DAC test tone on/off     v V  DAC volume -/+ 6 dB
   q      quit"""
 
@@ -242,6 +245,7 @@ def main():
                         c += (f" mix {chorus[0] / 100:.1f} depth {chorus[1] / 10:.1f} ms"
                               f" rate {chorus[2] / 100:.2f} Hz")
                     parts.append(c)
+                    parts.append(f"low-pass {on(fx & FX_LOWPASS)}")
                 if dac:
                     d = f"tone {on(dac[2])} | volume {dac[1] - 24:+d} dB"
                     if dac[0]:
