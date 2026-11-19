@@ -56,7 +56,7 @@
 #define FX_CHORUS 2
 #define FX_WAH 4
 #define FX_DIST 8
-#define WAH_SENSITIVITY 0.7f
+#define WAH_SENSITIVITY 2.0f
 #define DIST_DRIVE_DB 20
 
 struct Stats {
