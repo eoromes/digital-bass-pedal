@@ -234,7 +234,11 @@ static void write_dac(uint16_t v) {
   static uint32_t n = 0;
   if (!dac) return;
   // One ADC LSB = 2^20 in the 32-bit slot, so ADC full scale is DAC full scale.
+#ifdef DAC_ZERO
+  float s = 0;
+#else
   float s = (v - dc) * 1048576.0f;
+#endif
   s = s > 2147483520.0f ? 2147483520.0f : s < -2147483520.0f ? -2147483520.0f : s;
   dac_buf[2 * n] = dac_buf[2 * n + 1] = (int32_t)s;
   if (++n < FRAME_SAMPLES) return;
