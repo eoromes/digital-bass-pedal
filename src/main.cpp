@@ -12,8 +12,8 @@
 //
 // Effects run per sample, in this order: noise gate, auto-wah, distortion,
 // chorus. Commands from the PC: 'g' toggles the gate, '[' and ']' lower and
-// raise its threshold; 'w' toggles the auto-wah, 's'/'S' lower/raise its
-// sensitivity; 'o' toggles the distortion, 'k'/'K' lower/raise its drive;
+// raise its threshold; 'w' cycles the auto-wah off / envelope / LFO, 's'/'S'
+// lower/raise its sensitivity, 'e'/'E' its LFO rate; 'o' toggles the distortion, 'k'/'K' lower/raise its drive;
 // 'c' toggles the chorus, m/M, d/D and r/R lower/raise its mix, depth and rate.
 //
 // Sample: 10xxxxxx 0xxxxxxx (12 bits). Once per second: STAT_HEADER, field
@@ -47,7 +47,7 @@
 #endif
 #define DAC_DMA_BUFS 4
 #define STAT_HEADER 0xC1
-#define STAT_FIELDS 22
+#define STAT_FIELDS 24
 #define GATE_THRESHOLD 32
 #define CHORUS_MIX 0.6f
 #define CHORUS_DEPTH_MS 4
@@ -56,7 +56,8 @@
 #define FX_CHORUS 2
 #define FX_WAH 4
 #define FX_DIST 8
-#define WAH_SENSITIVITY 2.0f
+#define WAH_SENSITIVITY 1.5f
+#define WAH_LFO_HZ 1.5f
 #define DIST_DRIVE_DB 20
 
 struct Stats {
@@ -99,7 +100,8 @@ static void build_stats() {
                                    (uint32_t)(chorus.get_rate_hz() * 100 + 0.5f),
                                    pool_ovf, st.produced, st.foreign, st.dac_short,
                                    (uint32_t)(dist.get_drive_db() + 0.5f),
-                                   (uint32_t)(wah.get_sensitivity() * 100 + 0.5f)};
+                                   (uint32_t)(wah.get_sensitivity() * 100 + 0.5f), wah.lfo,
+                                   (uint32_t)(wah.get_lfo_hz() * 100 + 0.5f)};
   stat_pkt[0] = STAT_HEADER;
   stat_pkt[1] = STAT_FIELDS;
   for (int i = 0; i < STAT_FIELDS; i++) {
@@ -139,7 +141,18 @@ static void tx_task(void *) {
       int c = Serial.read();
       if (c == 'g') fx = fx ^ FX_GATE;
       if (c == 'c') fx = fx ^ FX_CHORUS;
-      if (c == 'w') fx = fx ^ FX_WAH;
+      if (c == 'w') {
+        if (!(fx & FX_WAH)) {
+          wah.lfo = false;
+          fx = fx | FX_WAH;
+        } else if (!wah.lfo) {
+          wah.lfo = true;
+        } else {
+          fx = fx & ~FX_WAH;
+        }
+      }
+      if (c == 'e') wah.set_lfo_hz(wah.get_lfo_hz() * 0.8f);
+      if (c == 'E') wah.set_lfo_hz(wah.get_lfo_hz() * 1.25f);
       if (c == 'o') fx = fx ^ FX_DIST;
       if (c == 's') wah.set_sensitivity(wah.get_sensitivity() * 0.8f);
       if (c == 'S') wah.set_sensitivity(wah.get_sensitivity() * 1.25f);
@@ -238,7 +251,7 @@ void setup() {
 #endif
   gate.init(SAMPLE_RATE, GATE_THRESHOLD);
   chorus.init(SAMPLE_RATE, CHORUS_MIX, CHORUS_DEPTH_MS, CHORUS_RATE_HZ);
-  wah.init(SAMPLE_RATE, WAH_SENSITIVITY);
+  wah.init(SAMPLE_RATE, WAH_SENSITIVITY, WAH_LFO_HZ);
   dist.init(SAMPLE_RATE, DIST_DRIVE_DB);
   xTaskCreatePinnedToCore(tx_task, "tx", 4096, nullptr, 5, nullptr, 0);
   while (!tx_ready) delay(1);
