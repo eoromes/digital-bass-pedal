@@ -1,8 +1,10 @@
-// Samples the bass at 16 kHz, runs the effects, plays the result on the
-// PCM5102A DAC over I2S and streams it to the PC (tools/listen.py).
-// ADC1 runs in continuous mode with DMA on GPIO33 at 16 x 16 kHz, and each
-// output sample is the mean of 16 conversions. Of the ADC1 pins, GPIO33 had
-// the least hiss, and the mean of 16 brought it below analogRead (E18).
+// Samples the bass at 48 kHz, runs the effects, plays the result on the
+// PCM5102A DAC over I2S and streams it to the PC (tools/listen.py) at 16 kHz.
+// ADC1 runs in continuous mode with DMA on GPIO33 at 8 x 48 kHz, and each
+// output sample is the mean of 8 conversions. Of the ADC1 pins, GPIO33 had
+// the least hiss, and the mean of 16 brought it below analogRead (E18). At
+// 16 kHz the DAC's out-of-band noise and images sat just above 8 kHz, where
+// the amp made them audible; at 48 kHz they move above 24 kHz.
 // Core 1 reads the DMA frames, runs the effects and writes the DAC; core 0
 // sends to the PC.
 //
@@ -31,8 +33,15 @@
 #include "noise_gate.h"
 
 #define INPUT_PIN 33
-#define SAMPLE_RATE 16000
-#define OS 16
+#define SAMPLE_RATE 48000
+// The PC link can't carry 48 kHz: the stream keeps one sample in STREAM_DECIM
+// after an anti-alias low-pass, i.e. 16 kHz, as before.
+#define STREAM_DECIM 3
+// At 48 kHz, averaging 16 runs the ADC at 768 kHz, where each conversion is
+// much noisier: hiss 3.6 LSB against 2.0 with 8 (384 kHz) and 1.9 with 4 (E20).
+#ifndef OS
+#define OS 8
+#endif
 #define BAUD 921600
 #define BLOCK 64
 #define NBLK 32
@@ -86,6 +95,9 @@ static Chorus chorus;
 static AutoWah wah;
 static Distortion dist;
 static LowPass lowpass;
+// Anti-alias for the 16 kHz stream: two biquads at 7 kHz before keeping one
+// sample in STREAM_DECIM.
+static LowPass stream_aa1, stream_aa2;
 static float dc = -1;
 static volatile uint32_t fx = 0;
 
@@ -103,7 +115,7 @@ static void build_stats() {
                                    (uint32_t)(chorus.mix * 100 + 0.5f),
                                    (uint32_t)(chorus.get_depth_ms() * 10 + 0.5f),
                                    (uint32_t)(chorus.get_rate_hz() * 100 + 0.5f),
-                                   pool_ovf, st.produced, st.foreign, st.dac_short,
+                                   pool_ovf, st.produced / 10, st.foreign, st.dac_short,
                                    (uint32_t)(dist.get_drive_db() + 0.5f),
                                    (uint32_t)(wah.get_sensitivity() * 100 + 0.5f), wah.lfo,
                                    (uint32_t)(wah.get_lfo_hz() * 100 + 0.5f),
@@ -269,6 +281,8 @@ void setup() {
   wah.init(SAMPLE_RATE, WAH_SENSITIVITY, WAH_LFO_HZ);
   dist.init(SAMPLE_RATE, DIST_DRIVE_DB);
   lowpass.init(SAMPLE_RATE, LOWPASS_HZ);
+  stream_aa1.init(SAMPLE_RATE, 7000);
+  stream_aa2.init(SAMPLE_RATE, 7000);
   xTaskCreatePinnedToCore(tx_task, "tx", 4096, nullptr, 5, nullptr, 0);
   while (!tx_ready) delay(1);
   start_adc();
@@ -276,7 +290,7 @@ void setup() {
 
 void loop() {
   static uint8_t buf[FRAME_BYTES];
-  static uint32_t sum = 0, in_group = 0, out_i = 0;
+  static uint32_t sum = 0, in_group = 0, out_i = 0, dec_n = 0;
   static int64_t t_stat = esp_timer_get_time();
 
   // Never returns: between loop() calls the Arduino core polls the serial port.
@@ -298,12 +312,17 @@ void loop() {
       v = process(v);
       st.fx_cycles_max = max(st.fx_cycles_max, esp_cpu_get_cycle_count() - c0);
       write_dac(v);
+      st.produced++;
 
+      float a = stream_aa2.process(stream_aa1.process(v - dc));
+      if (++dec_n < STREAM_DECIM) continue;
+      dec_n = 0;
+      int sv = (int)(dc + a + 0.5f);
+      v = sv < 0 ? 0 : sv > 4095 ? 4095 : sv;
       bool full = wr - rd >= NBLK;
       uint8_t *out = full ? scratch : ring[wr % NBLK];
       out[2 * out_i] = 0x80 | (v >> 6);
       out[2 * out_i + 1] = v & 0x3F;
-      st.produced++;
       if (++out_i == BLOCK) {
         out_i = 0;
         if (full) {

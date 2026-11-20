@@ -38,7 +38,7 @@ STAT_NAMES = ("max_late_us", "late_over_2us", "late_over_10us", "late_over_50us"
               "read_mean_us_x10", "read_max_us", "min_slack_us", "effects",
               "gate_threshold_lsb", "fx_max_cycles",
               "chorus_mix_x100", "chorus_depth_ms_x10", "chorus_rate_hz_x100",
-              "pool_overflows", "samples_per_s", "foreign_channel",
+              "pool_overflows", "samples_per_s_div10", "foreign_channel",
               "dac_short_writes", "dist_drive_db", "wah_sensitivity_x100", "wah_lfo", "wah_lfo_hz_x100",
               "lowpass_hz")
 DMA_STAT_NAMES = ("pin", "mean_of", "samples_per_s", "dropped_blocks",

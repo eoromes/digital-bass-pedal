@@ -5,7 +5,7 @@
 // library calls (the LFO is a parabolic sine).
 class Chorus {
  public:
-  static constexpr unsigned SIZE = 512;  // power of two, 32 ms at 16 kHz
+  static constexpr unsigned SIZE = 2048;  // power of two, 42 ms at 48 kHz
 
   static constexpr float CENTER_MS = 12;
 
@@ -18,7 +18,7 @@ class Chorus {
     set_rate_hz(rate_hz);
   }
 
-  // Delay swings over CENTER_MS +- depth; the buffer holds 32 ms.
+  // Delay swings over CENTER_MS +- depth; the buffer holds 42 ms at 48 kHz.
   void set_depth_ms(float ms) {
     depth_ms = ms < 0 ? 0 : ms > 10 ? 10 : ms;
     depth = depth_ms * 0.001f * fs;
