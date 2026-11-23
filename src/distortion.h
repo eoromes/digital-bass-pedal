@@ -3,9 +3,10 @@
 #include <math.h>
 
 // Bass distortion. Below ~150 Hz the signal passes clean; above it, it is
-// driven into a soft clipper (a tanh approximation) and low-passed at ~3 kHz
-// to tame the fizz, then added back to the clean lows, so the low end stays
-// solid. Input and output in ADC LSB around the rest level.
+// driven into a cubic soft clipper (no division in the sampling loop) and
+// low-passed at ~3 kHz to tame the fizz, then added back to the clean lows,
+// so the low end stays solid. Input and output in ADC LSB around the rest
+// level.
 class Distortion {
  public:
   static constexpr float LEVEL = 700.0f;
@@ -26,8 +27,9 @@ class Distortion {
   __attribute__((always_inline)) float process(float x) {
     low += split * (x - low);
     float h = (x - low) * drive;
-    h = h > 3.0f ? 3.0f : h < -3.0f ? -3.0f : h;
-    float s = h * (27.0f + h * h) / (27.0f + 9.0f * h * h);
+    // Slope 1 at 0, flat at +-1.5, where it reaches +-1.
+    h = h > 1.5f ? 1.5f : h < -1.5f ? -1.5f : h;
+    float s = h - (4.0f / 27.0f) * h * h * h;
     post += tone * (s - post);
     return low + post * LEVEL;
   }
