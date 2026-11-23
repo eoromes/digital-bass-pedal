@@ -12,12 +12,12 @@
 // Same sample on L and R. The I2S pins (18/19/23) are on the other side of
 // the board from the ADC input (GPIO33).
 //
-// Effects run per sample, in this order: noise gate, auto-wah, distortion,
+// Effects run per sample, in this order: noise gate, distortion, flanger,
 // chorus. Commands from the PC: 'g' toggles the gate, '[' and ']' lower and
-// raise its threshold; 'w' cycles the auto-wah off / envelope / LFO, 's'/'S'
-// lower/raise its sensitivity, 'e'/'E' its LFO rate; 'o' toggles the
-// distortion, 'k'/'K' lower/raise its drive; 'c' toggles the chorus, m/M, d/D
-// and r/R lower/raise its mix, depth and rate.
+// raise its threshold; 'o' toggles the distortion, 'k'/'K' lower/raise its
+// drive; 'f' toggles the flanger, 'v'/'V'
+// lower/raise its sweep rate, 'b'/'B' its feedback; 'c' toggles the chorus,
+// m/M, d/D and r/R lower/raise its mix, depth and rate.
 //
 // Sample: 10xxxxxx 0xxxxxxx (12 bits). Once per second: STAT_HEADER, field
 // count and 14-bit fields as two 0xxxxxxx bytes (see build_stats). Fields 0-4
@@ -26,9 +26,9 @@
 #include <driver/i2s_std.h>
 #include <esp_adc/adc_continuous.h>
 
-#include "autowah.h"
 #include "chorus.h"
 #include "distortion.h"
+#include "flanger.h"
 #include "lowpass.h"
 #include "noise_gate.h"
 
@@ -58,17 +58,17 @@
 #endif
 #define DAC_DMA_BUFS 4
 #define STAT_HEADER 0xC1
-#define STAT_FIELDS 24
+#define STAT_FIELDS 23
 #define GATE_THRESHOLD 32
 #define CHORUS_MIX 1.0f
 #define CHORUS_DEPTH_MS 3
 #define CHORUS_RATE_HZ 0.8f
 #define FX_GATE 1
 #define FX_CHORUS 2
-#define FX_WAH 4
 #define FX_DIST 8
-#define WAH_SENSITIVITY 1.5f
-#define WAH_LFO_HZ 1.5f
+#define FX_FLANGER 16
+#define FLANGER_RATE_HZ 0.25f
+#define FLANGER_FEEDBACK 0.6f
 #define DIST_DRIVE_DB 20
 
 struct Stats {
@@ -90,8 +90,8 @@ static adc_channel_t channel;
 
 static NoiseGate gate;
 static Chorus chorus;
-static AutoWah wah;
 static Distortion dist;
+static Flanger flanger;
 // Anti-alias for the 16 kHz stream: two biquads at 7 kHz before keeping one
 // sample in STREAM_DECIM.
 static LowPass stream_aa1, stream_aa2;
@@ -114,8 +114,8 @@ static void build_stats() {
                                    (uint32_t)(chorus.get_rate_hz() * 100 + 0.5f),
                                    pool_ovf, st.produced / 10, st.foreign, st.dac_short,
                                    (uint32_t)(dist.get_drive_db() + 0.5f),
-                                   (uint32_t)(wah.get_sensitivity() * 100 + 0.5f), wah.lfo,
-                                   (uint32_t)(wah.get_lfo_hz() * 100 + 0.5f)};
+                                   (uint32_t)(flanger.get_rate_hz() * 100 + 0.5f),
+                                   (uint32_t)(flanger.get_feedback() * 100 + 0.5f)};
   stat_pkt[0] = STAT_HEADER;
   stat_pkt[1] = STAT_FIELDS;
   for (int i = 0; i < STAT_FIELDS; i++) {
@@ -134,10 +134,10 @@ static IRAM_ATTR uint16_t process(uint16_t v) {
   float x = v - dc;
   float y = gate.process(x);
   if (!(fx & FX_GATE)) y = x;
-  float a = wah.process(y);
-  if (!(fx & FX_WAH)) a = y;
-  float b = dist.process(a);
-  if (!(fx & FX_DIST)) b = a;
+  float b = dist.process(y);
+  if (!(fx & FX_DIST)) b = y;
+  float fl = flanger.process(b);
+  if (fx & FX_FLANGER) b = fl;
   float z = chorus.process(b);
   if (!(fx & FX_CHORUS)) z = b;
   if (!fx) return v;
@@ -155,23 +155,14 @@ static void tx_task(void *) {
       int c = Serial.read();
       if (c == 'g') fx = fx ^ FX_GATE;
       if (c == 'c') fx = fx ^ FX_CHORUS;
-      if (c == 'w') {
-        if (!(fx & FX_WAH)) {
-          wah.lfo = false;
-          fx = fx | FX_WAH;
-        } else if (!wah.lfo) {
-          wah.lfo = true;
-        } else {
-          fx = fx & ~FX_WAH;
-        }
-      }
-      if (c == 'e') wah.set_lfo_hz(wah.get_lfo_hz() * 0.8f);
-      if (c == 'E') wah.set_lfo_hz(wah.get_lfo_hz() * 1.25f);
       if (c == 'o') fx = fx ^ FX_DIST;
-      if (c == 's') wah.set_sensitivity(wah.get_sensitivity() * 0.8f);
-      if (c == 'S') wah.set_sensitivity(wah.get_sensitivity() * 1.25f);
       if (c == 'k') dist.set_drive_db(dist.get_drive_db() - 3);
       if (c == 'K') dist.set_drive_db(dist.get_drive_db() + 3);
+      if (c == 'f') fx = fx ^ FX_FLANGER;
+      if (c == 'v') flanger.set_rate_hz(flanger.get_rate_hz() * 0.8f);
+      if (c == 'V') flanger.set_rate_hz(flanger.get_rate_hz() * 1.25f);
+      if (c == 'b') flanger.set_feedback(flanger.get_feedback() - 0.1f);
+      if (c == 'B') flanger.set_feedback(flanger.get_feedback() + 0.1f);
       float t = gate.get_threshold();
       if (c == '[' && t > 2) gate.set_threshold(t - 2);
       if (c == ']' && t < 60) gate.set_threshold(t + 2);
@@ -268,8 +259,8 @@ void setup() {
 #endif
   gate.init(SAMPLE_RATE, GATE_THRESHOLD);
   chorus.init(SAMPLE_RATE, CHORUS_MIX, CHORUS_DEPTH_MS, CHORUS_RATE_HZ);
-  wah.init(SAMPLE_RATE, WAH_SENSITIVITY, WAH_LFO_HZ);
   dist.init(SAMPLE_RATE, DIST_DRIVE_DB);
+  flanger.init(SAMPLE_RATE, FLANGER_RATE_HZ, FLANGER_FEEDBACK);
   stream_aa1.init(SAMPLE_RATE, 7000);
   stream_aa2.init(SAMPLE_RATE, 7000);
   xTaskCreatePinnedToCore(tx_task, "tx", 4096, nullptr, 5, nullptr, 0);
