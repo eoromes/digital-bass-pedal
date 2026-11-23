@@ -60,9 +60,9 @@
 #define STAT_HEADER 0xC1
 #define STAT_FIELDS 24
 #define GATE_THRESHOLD 32
-#define CHORUS_MIX 0.5f
-#define CHORUS_DEPTH_MS 2
-#define CHORUS_RATE_HZ 0.5f
+#define CHORUS_MIX 1.0f
+#define CHORUS_DEPTH_MS 3
+#define CHORUS_RATE_HZ 0.8f
 #define FX_GATE 1
 #define FX_CHORUS 2
 #define FX_WAH 4
@@ -179,8 +179,8 @@ static void tx_task(void *) {
       if (c == 'M') chorus.set_mix(chorus.get_mix() + 0.1f);
       if (c == 'd') chorus.set_depth_ms(chorus.get_depth_ms() - 0.5f);
       if (c == 'D') chorus.set_depth_ms(chorus.get_depth_ms() + 0.5f);
-      if (c == 'r') chorus.set_rate_hz(chorus.get_rate_hz() - 0.1f);
-      if (c == 'R') chorus.set_rate_hz(chorus.get_rate_hz() + 0.1f);
+      if (c == 'r') chorus.set_rate_hz(chorus.get_rate_hz() * 0.8f);
+      if (c == 'R') chorus.set_rate_hz(chorus.get_rate_hz() * 1.25f);
     }
     while (rd != wr) {
       __sync_synchronize();
