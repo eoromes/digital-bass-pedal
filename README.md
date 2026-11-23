@@ -31,7 +31,7 @@ The PCM5102A needs SCK tied to GND and the XSMT jumper set to H, otherwise it st
 ## Effects
 
 - Noise gate (RMS expander), working
-- Chorus applied only above ~150 Hz, working
+- Bass chorus, working: the lows below an adjustable crossover (100 Hz by default) stay dry, and only the band above goes through the modulated delay
 - Planned: overdrive, compressor, delay
 
 The effects run sample by sample inside the sampling loop, in IRAM. Gate and chorus together cost about 700 CPU cycles per sample.
@@ -52,7 +52,7 @@ The current firmware samples GPIO33 with DMA at 256 kHz, averages each 16 conver
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
-.venv/bin/python tools/listen.py --save take.wav   # play and record (keys: g gate, [ ] threshold, c chorus, m/M d/D r/R its mix, depth, rate)
+.venv/bin/python tools/listen.py --save take.wav   # play and record (keys: g gate, [ ] threshold, c chorus, m/M d/D r/R f/F its mix, depth, rate, low filter)
 .venv/bin/python tools/analyze.py take.wav         # noise analysis
 .venv/bin/python tools/view.py take.wav            # waveform, clipping, attacks
 ```
