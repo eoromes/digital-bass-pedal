@@ -2,9 +2,9 @@
 // PCM5102A DAC over I2S and streams it to the PC (tools/listen.py) at 16 kHz.
 // ADC1 runs in continuous mode with DMA on GPIO33 at 8 x 48 kHz, and each
 // output sample is the mean of 8 conversions. Of the ADC1 pins, GPIO33 had
-// the least hiss, and the mean of 16 brought it below analogRead (E18). At
-// 16 kHz the DAC's out-of-band noise and images sat just above 8 kHz, where
-// the amp made them audible; at 48 kHz they move above 24 kHz.
+// the least hiss (E18). At 16 kHz the DAC's out-of-band noise and images sat
+// just above 8 kHz, where the amp made them audible; at 48 kHz they move
+// above 24 kHz.
 // Core 1 reads the DMA frames, runs the effects and writes the DAC; core 0
 // sends to the PC.
 //
@@ -15,13 +15,13 @@
 // Effects run per sample, in this order: noise gate, distortion, flanger,
 // chorus. Commands from the PC: 'g' toggles the gate, '[' and ']' lower and
 // raise its threshold; 'o' toggles the distortion, 'k'/'K' lower/raise its
-// drive; 'f' toggles the flanger, 'v'/'V'
-// lower/raise its sweep rate, 'b'/'B' its feedback; 'c' toggles the chorus,
-// m/M, d/D and r/R lower/raise its mix, depth and rate.
+// drive; 'f' toggles the flanger, 'v'/'V' lower/raise its sweep rate, 'b'/'B'
+// its feedback; 'c' toggles the chorus, m/M, d/D and r/R lower/raise its mix,
+// depth and rate.
 //
 // Sample: 10xxxxxx 0xxxxxxx (12 bits). Once per second: STAT_HEADER, field
-// count and 14-bit fields as two 0xxxxxxx bytes (see build_stats). Fields 0-4
-// and 6-9 were analogRead timing and are now always 0.
+// count and 14-bit fields as two 0xxxxxxx bytes, in the order of build_stats
+// (tools/listen.py names them in STAT_NAMES).
 #include <Arduino.h>
 #include <driver/i2s_std.h>
 #include <esp_adc/adc_continuous.h>
@@ -39,34 +39,26 @@
 #define STREAM_DECIM 3
 // At 48 kHz, averaging 16 runs the ADC at 768 kHz, where each conversion is
 // much noisier: hiss 3.6 LSB against 2.0 with 8 (384 kHz) and 1.9 with 4 (E20).
-#ifndef OS
 #define OS 8
-#endif
 #define BAUD 921600
 #define BLOCK 64
 #define NBLK 32
 #define FRAME_SAMPLES 32
 #define FRAME_BYTES (FRAME_SAMPLES * OS * SOC_ADC_DIGI_RESULT_BYTES)
-#ifndef DAC_BCK
 #define DAC_BCK 18
-#endif
-#ifndef DAC_WS
 #define DAC_WS 19
-#endif
-#ifndef DAC_DOUT
 #define DAC_DOUT 23
-#endif
 #define DAC_DMA_BUFS 4
 #define STAT_HEADER 0xC1
-#define STAT_FIELDS 23
+#define STAT_FIELDS 14
 #define GATE_THRESHOLD 32
 #define CHORUS_MIX 1.0f
 #define CHORUS_DEPTH_MS 3
 #define CHORUS_RATE_HZ 0.8f
 #define FX_GATE 1
 #define FX_CHORUS 2
-#define FX_DIST 8
-#define FX_FLANGER 16
+#define FX_DIST 4
+#define FX_FLANGER 8
 #define FLANGER_RATE_HZ 0.25f
 #define FLANGER_FEEDBACK 0.6f
 #define DIST_DRIVE_DB 20
@@ -107,8 +99,8 @@ static bool IRAM_ATTR on_pool_ovf(adc_continuous_handle_t, const adc_continuous_
 }
 
 static void build_stats() {
-  const uint32_t f[STAT_FIELDS] = {0, 0, 0, 0, 0, st.dropped, 0, 0, 0, 0, fx,
-                                   (uint32_t)gate.get_threshold(), st.fx_cycles_max,
+  const uint32_t f[STAT_FIELDS] = {st.dropped, fx, (uint32_t)gate.get_threshold(),
+                                   st.fx_cycles_max,
                                    (uint32_t)(chorus.get_mix() * 100 + 0.5f),
                                    (uint32_t)(chorus.get_depth_ms() * 10 + 0.5f),
                                    (uint32_t)(chorus.get_rate_hz() * 100 + 0.5f),
@@ -236,13 +228,8 @@ static void start_dac() {
 
 static void write_dac(uint16_t v) {
   static uint32_t n = 0;
-  if (!dac) return;
   // One ADC LSB = 2^20 in the 32-bit slot, so ADC full scale is DAC full scale.
-#ifdef DAC_ZERO
-  float s = 0;
-#else
   float s = (v - dc) * 1048576.0f;
-#endif
   s = s > 2147483520.0f ? 2147483520.0f : s < -2147483520.0f ? -2147483520.0f : s;
   dac_buf[2 * n] = dac_buf[2 * n + 1] = (int32_t)s;
   if (++n < FRAME_SAMPLES) return;
@@ -254,9 +241,7 @@ static void write_dac(uint16_t v) {
 
 void setup() {
   vTaskPrioritySet(nullptr, configMAX_PRIORITIES - 2);
-#ifndef NO_DAC
   start_dac();
-#endif
   gate.init(SAMPLE_RATE, GATE_THRESHOLD);
   chorus.init(SAMPLE_RATE, CHORUS_MIX, CHORUS_DEPTH_MS, CHORUS_RATE_HZ);
   dist.init(SAMPLE_RATE, DIST_DRIVE_DB);

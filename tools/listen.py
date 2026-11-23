@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
 """Receives the ESP32 stream (src/main.cpp) over serial, shows the input
-level and what is on, and forwards keys to the ESP32. The ESP32 plays the
-audio on its DAC; --play also plays it on the PC. With the DMA firmware, the
-analogRead timing columns are always 0.
+level and what is on, and forwards keys to the ESP32 (listed when it starts).
+The ESP32 plays the audio on its DAC; --play also plays it on the PC.
 
     .venv/bin/python tools/listen.py [--play] [--save file.wav]
 
-With --save, writes the values sent by the ESP32 to a WAV file
-(sample = (value - 2048) * 16) and the firmware stats to file.timing.csv. With
-an effect on, those are the processed values; the effects column says which.
+The stream is 16 kHz: the firmware low-passes its 48 kHz signal at 7 kHz and
+keeps one sample in three. With an effect on, it carries the processed signal.
+With --save, writes it to a WAV file (sample = (value - 2048) * 16) and the
+firmware stats to file.timing.csv.
 
-Keys: g toggles the noise gate, [ and ] change its threshold; c toggles the
-chorus, m/M d/D r/R lower/raise its mix, depth and rate;
-o toggles the distortion, k/K its drive; f toggles the flanger, v/V its
-rate, b/B its feedback; q quits. With the ADC1 DMA test
-firmware (src/dma_test.cpp), 0..6 average 1 to 64 conversions per sample;
---send 2 sends a key at start.
+With the ADC1 DMA test firmware (src/dma_test.cpp), 0..6 average 1 to 64
+conversions per sample; --send 2 sends a key at start.
 """
 
 import argparse
 import array
 import os
+import signal
 import sys
 import termios
 import threading
@@ -32,10 +29,7 @@ RATE = 16000
 CALLBACK_FRAMES = 128
 STAT_HEADER = 0xC1
 DMA_STAT_HEADER = 0xC2
-STAT_NAMES = ("max_late_us", "late_over_2us", "late_over_10us", "late_over_50us",
-              "late_over_10us_block_start", "dropped_blocks", "read_min_us",
-              "read_mean_us_x10", "read_max_us", "min_slack_us", "effects",
-              "gate_threshold_lsb", "fx_max_cycles",
+STAT_NAMES = ("dropped_blocks", "effects", "gate_threshold_lsb", "fx_max_cycles",
               "chorus_mix_x100", "chorus_depth_ms_x10", "chorus_rate_hz_x100",
               "pool_overflows", "samples_per_s_div10", "foreign_channel",
               "dac_short_writes", "dist_drive_db",
@@ -44,8 +38,8 @@ DMA_STAT_NAMES = ("pin", "mean_of", "samples_per_s", "dropped_blocks",
                   "pool_overflows", "foreign_channel")
 FX_GATE = 1
 FX_CHORUS = 2
-FX_DIST = 8
-FX_FLANGER = 16
+FX_DIST = 4
+FX_FLANGER = 8
 KEYS = b"g[]cmMdDrRokKfvVbB0123456"
 HELP = """keys:
   g      noise gate on/off        [ ]  gate threshold -/+
@@ -113,11 +107,13 @@ class Player:
 
 
 def forward_keys(fd):
-    """Sends effect keys to the ESP32; q ends the session."""
+    """Sends effect keys to the ESP32. q interrupts the main thread, so its
+    cleanup (terminal mode, WAV, player) still runs."""
     while True:
         key = os.read(sys.stdin.fileno(), 1)
         if not key or key == b"q":
-            os._exit(0)
+            os.kill(os.getpid(), signal.SIGINT)
+            return
         if key in KEYS:
             os.write(fd, key)
 
@@ -154,6 +150,21 @@ class TimingCSV:
             self.file.close()
 
 
+def status(stats):
+    """The effects part of the status line, from the named stats fields."""
+    fx = stats["effects"]
+    parts = [f"gate {on(fx & FX_GATE)} thr {stats['gate_threshold_lsb']}",
+             f"dist {on(fx & FX_DIST)} drive {stats['dist_drive_db']} dB",
+             f"flanger {on(fx & FX_FLANGER)} rate {stats['flanger_rate_hz_x100'] / 100:.2f} Hz"
+             f" fb {stats['flanger_feedback_x100'] / 100:.1f}",
+             f"chorus {on(fx & FX_CHORUS)} mix {stats['chorus_mix_x100'] / 100:.1f}"
+             f" depth {stats['chorus_depth_ms_x10'] / 10:.1f} ms"
+             f" rate {stats['chorus_rate_hz_x100'] / 100:.2f} Hz"]
+    if stats["dac_short_writes"]:
+        parts.append(f"dac short writes {stats['dac_short_writes']}")
+    return parts
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", default="/dev/ttyUSB0")
@@ -185,8 +196,7 @@ def main():
         threading.Thread(target=forward_keys, args=(fd,), daemon=True).start()
         print(HELP, flush=True)
 
-    high = stat = dc = fx = threshold = chorus = dma = dac = fl = None
-    header = None
+    high = stat = dc = stats = dma = header = None
     lo, hi, sq, count = 4095, 0, 0.0, 0
     raw = array.array("h")
     t0 = time.monotonic()
@@ -198,7 +208,7 @@ def main():
                 data = b""
             if not data:
                 raise SystemExit("serial port closed")
-            out = array.array("h")
+            out = array.array("h") if player else None
             for b in data:
                 if b & 0x80:
                     vals = parse_stats(stat)
@@ -208,11 +218,8 @@ def main():
                             timing.names = DMA_STAT_NAMES
                             timing.add(vals)
                     elif vals:
-                        fx = vals[10] if len(vals) > 10 else None
-                        threshold = vals[11] if len(vals) > 11 else None
-                        chorus = vals[13:16] if len(vals) > 15 else None
-                        dac = vals[19:21] if len(vals) > 20 else None
-                        fl = vals[21:23] if len(vals) > 22 else None
+                        if len(vals) == len(STAT_NAMES):
+                            stats = dict(zip(STAT_NAMES, vals))
                         if timing:
                             timing.add(vals)
                     stat = [] if b in (STAT_HEADER, DMA_STAT_HEADER) else None
@@ -232,7 +239,8 @@ def main():
                 sq += (v - dc) ** 2
                 count += 1
                 raw.append((v - 2048) * 16)
-                out.append(int(max(-32768, min(32767, (v - dc) * 16 * args.gain))))
+                if out is not None:
+                    out.append(int(max(-32768, min(32767, (v - dc) * 16 * args.gain))))
 
             if player:
                 player.write(out.tobytes())
@@ -242,20 +250,8 @@ def main():
                 if dma:
                     parts.append(f"GPIO{dma[0]} mean of {dma[1]}  {dma[2]} samples/s"
                                  f"  dropped {dma[3]} overflow {dma[4]} foreign {dma[5]}")
-                if fx is not None:
-                    parts.append(f"gate {on(fx & FX_GATE)} thr {threshold}")
-                    if dac:
-                        parts.append(f"dist {on(fx & FX_DIST)} drive {dac[1]} dB")
-                    if fl:
-                        parts.append(f"flanger {on(fx & FX_FLANGER)} rate {fl[0] / 100:.2f} Hz"
-                                     f" fb {fl[1] / 100:.1f}")
-                    c = f"chorus {on(fx & FX_CHORUS)}"
-                    if chorus:
-                        c += (f" mix {chorus[0] / 100:.1f} depth {chorus[1] / 10:.1f} ms"
-                              f" rate {chorus[2] / 100:.2f} Hz")
-                    parts.append(c)
-                if dac and dac[0]:
-                    parts.append(f"dac short writes {dac[0]}")
+                if stats:
+                    parts += status(stats)
                 print(" | ".join(parts), flush=True)
                 lo, hi, sq, count, t0 = 4095, 0, 0.0, 0, time.monotonic()
                 if wav:
