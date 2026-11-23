@@ -13,13 +13,12 @@
 // the board from the ADC input (GPIO33).
 //
 // Effects run per sample, in this order: noise gate, auto-wah, distortion,
-// chorus, low-pass. Commands from the PC: 'g' toggles the gate, '[' and ']'
-// lower and raise its threshold; 'w' cycles the auto-wah off / envelope / LFO,
-// 's'/'S' lower/raise its sensitivity, 'e'/'E' its LFO rate; 'o' toggles the
+// chorus. Commands from the PC: 'g' toggles the gate, '[' and ']' lower and
+// raise its threshold; 'w' cycles the auto-wah off / envelope / LFO, 's'/'S'
+// lower/raise its sensitivity, 'e'/'E' its LFO rate; 'o' toggles the
 // distortion, 'k'/'K' lower/raise its drive; 'c' toggles the chorus, m/M, d/D,
 // r/R and l/L lower/raise its mix, depth, rate and low filter (the frequency
-// below which the bass stays dry); 'f' toggles the low-pass, 'h'/'H'
-// lower/raise its cutoff.
+// below which the bass stays dry).
 //
 // Sample: 10xxxxxx 0xxxxxxx (12 bits). Once per second: STAT_HEADER, field
 // count and 14-bit fields as two 0xxxxxxx bytes (see build_stats). Fields 0-4
@@ -60,7 +59,7 @@
 #endif
 #define DAC_DMA_BUFS 4
 #define STAT_HEADER 0xC1
-#define STAT_FIELDS 26
+#define STAT_FIELDS 25
 #define GATE_THRESHOLD 32
 #define CHORUS_MIX 0.5f
 #define CHORUS_DEPTH_MS 2
@@ -70,8 +69,6 @@
 #define FX_CHORUS 2
 #define FX_WAH 4
 #define FX_DIST 8
-#define FX_LOWPASS 16
-#define LOWPASS_HZ 3000
 #define WAH_SENSITIVITY 1.5f
 #define WAH_LFO_HZ 1.5f
 #define DIST_DRIVE_DB 20
@@ -97,7 +94,6 @@ static NoiseGate gate;
 static Chorus chorus;
 static AutoWah wah;
 static Distortion dist;
-static LowPass lowpass;
 // Anti-alias for the 16 kHz stream: two biquads at 7 kHz before keeping one
 // sample in STREAM_DECIM.
 static LowPass stream_aa1, stream_aa2;
@@ -122,7 +118,6 @@ static void build_stats() {
                                    (uint32_t)(dist.get_drive_db() + 0.5f),
                                    (uint32_t)(wah.get_sensitivity() * 100 + 0.5f), wah.lfo,
                                    (uint32_t)(wah.get_lfo_hz() * 100 + 0.5f),
-                                   (uint32_t)(lowpass.get_cutoff() + 0.5f),
                                    (uint32_t)(chorus.get_split_hz() + 0.5f)};
   stat_pkt[0] = STAT_HEADER;
   stat_pkt[1] = STAT_FIELDS;
@@ -148,8 +143,6 @@ static IRAM_ATTR uint16_t process(uint16_t v) {
   if (!(fx & FX_DIST)) b = a;
   float z = chorus.process(b);
   if (!(fx & FX_CHORUS)) z = b;
-  float l = lowpass.process(z);
-  if (fx & FX_LOWPASS) z = l;
   if (!fx) return v;
   int out = (int)(dc + z + 0.5f);
   return out < 0 ? 0 : out > 4095 ? 4095 : out;
@@ -182,9 +175,6 @@ static void tx_task(void *) {
       if (c == 'S') wah.set_sensitivity(wah.get_sensitivity() * 1.25f);
       if (c == 'k') dist.set_drive_db(dist.get_drive_db() - 3);
       if (c == 'K') dist.set_drive_db(dist.get_drive_db() + 3);
-      if (c == 'f') fx = fx ^ FX_LOWPASS;
-      if (c == 'h') lowpass.set_cutoff(lowpass.get_cutoff() * 0.8f);
-      if (c == 'H') lowpass.set_cutoff(lowpass.get_cutoff() * 1.25f);
       float t = gate.get_threshold();
       if (c == '[' && t > 2) gate.set_threshold(t - 2);
       if (c == ']' && t < 60) gate.set_threshold(t + 2);
@@ -285,7 +275,6 @@ void setup() {
   chorus.init(SAMPLE_RATE, CHORUS_MIX, CHORUS_DEPTH_MS, CHORUS_RATE_HZ, CHORUS_SPLIT_HZ);
   wah.init(SAMPLE_RATE, WAH_SENSITIVITY, WAH_LFO_HZ);
   dist.init(SAMPLE_RATE, DIST_DRIVE_DB);
-  lowpass.init(SAMPLE_RATE, LOWPASS_HZ);
   stream_aa1.init(SAMPLE_RATE, 7000);
   stream_aa2.init(SAMPLE_RATE, 7000);
   xTaskCreatePinnedToCore(tx_task, "tx", 4096, nullptr, 5, nullptr, 0);

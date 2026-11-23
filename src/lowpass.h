@@ -2,9 +2,9 @@
 
 #include <math.h>
 
-// 2nd-order Butterworth low-pass (RBJ biquad). Cuts the ADC hiss above the
-// bass range: most of the hiss energy is in the treble, where the bass has
-// little. Input and output in ADC LSB around the rest level.
+// 2nd-order Butterworth low-pass (RBJ biquad), used as the anti-alias filter
+// before the PC stream drops from 48 to 16 kHz. Input and output in ADC LSB
+// around the rest level.
 class LowPass {
  public:
   void init(float rate, float cutoff_hz) {
