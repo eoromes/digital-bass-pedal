@@ -8,7 +8,8 @@
 // spectrum, and the feedback sharpens them into resonant peaks. The output is
 // scaled down as the feedback rises, which tames those peaks but doesn't
 // remove them: their gain is about 1.2 at the default feedback of 0.6 and 3
-// at 0.9. Input and output in ADC LSB around the rest level.
+// at 0.9; the output limiter in main.cpp rounds off what still gets too loud.
+// Input and output in ADC LSB around the rest level.
 class Flanger {
  public:
   static constexpr float MIN_MS = 0.2f, MAX_MS = 4.0f;

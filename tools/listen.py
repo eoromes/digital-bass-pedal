@@ -5,10 +5,12 @@ The ESP32 plays the audio on its DAC; --play also plays it on the PC.
 
     .venv/bin/python tools/listen.py [--play] [--save file.wav]
 
-The stream is 16 kHz: the firmware low-passes its 48 kHz signal at 7 kHz and
-keeps one sample in three. With an effect on, it carries the processed signal.
-With --save, writes it to a WAV file (sample = (value - 2048) * 16) and the
-firmware stats to file.timing.csv.
+The stream is 16 kHz: the firmware low-passes its 48 kHz output at 7 kHz and
+keeps one sample in three, so it carries the processed signal and is not the
+raw ADC. The status line shows "in lo..hi", the input range the firmware saw
+at 48 kHz before any processing (0 or 4095 = the input clips), then "out" for
+the stream. With --save, writes the stream to a WAV file
+(sample = (value - 2048) * 16) and the firmware stats to file.timing.csv.
 
 With the ADC1 DMA test firmware (src/dma_test.cpp), 0..6 average 1 to 64
 conversions per sample; --send 2 sends a key at start.
@@ -33,7 +35,8 @@ STAT_NAMES = ("dropped_blocks", "effects", "gate_threshold_lsb", "fx_max_cycles"
               "chorus_mix_x100", "chorus_depth_ms_x10", "chorus_rate_hz_x100",
               "pool_overflows", "samples_per_s_div10", "foreign_channel",
               "dac_short_writes", "dist_drive_db",
-              "flanger_rate_hz_x100", "flanger_feedback_x100")
+              "flanger_rate_hz_x100", "flanger_feedback_x100",
+              "input_min", "input_max", "dac_underruns")
 DMA_STAT_NAMES = ("pin", "mean_of", "samples_per_s", "dropped_blocks",
                   "pool_overflows", "foreign_channel")
 FX_GATE = 1
@@ -160,8 +163,9 @@ def status(stats):
              f"chorus {on(fx & FX_CHORUS)} mix {stats['chorus_mix_x100'] / 100:.1f}"
              f" depth {stats['chorus_depth_ms_x10'] / 10:.1f} ms"
              f" rate {stats['chorus_rate_hz_x100'] / 100:.2f} Hz"]
-    if stats["dac_short_writes"]:
-        parts.append(f"dac short writes {stats['dac_short_writes']}")
+    if stats["dac_short_writes"] or stats["dac_underruns"]:
+        parts.append(f"dac short writes {stats['dac_short_writes']}"
+                     f" underruns {stats['dac_underruns']}")
     return parts
 
 
@@ -246,7 +250,10 @@ def main():
                 player.write(out.tobytes())
 
             if time.monotonic() - t0 >= 1.0 and count:
-                parts = [f"raw {lo:4d}..{hi:4d}  rms {(sq / count) ** 0.5:5.1f}"]
+                parts = []
+                if stats:
+                    parts.append(f"in {stats['input_min']:4d}..{stats['input_max']:4d}")
+                parts.append(f"out {lo:4d}..{hi:4d}  rms {(sq / count) ** 0.5:5.1f}")
                 if dma:
                     parts.append(f"GPIO{dma[0]} mean of {dma[1]}  {dma[2]} samples/s"
                                  f"  dropped {dma[3]} overflow {dma[4]} foreign {dma[5]}")

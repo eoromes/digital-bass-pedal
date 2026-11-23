@@ -13,7 +13,9 @@
 // the board from the ADC input (GPIO33).
 //
 // Effects run per sample, in this order: noise gate, distortion, flanger,
-// chorus. Commands from the PC: 'g' toggles the gate, '[' and ']' lower and
+// chorus, then a soft limiter before the DAC. The signal stays in float, in
+// ADC LSB around the rest level, from the ADC average to the DAC; only the PC
+// stream goes back to 12 bits. Commands from the PC: 'g' toggles the gate, '[' and ']' lower and
 // raise its threshold; 'o' toggles the distortion, 'k'/'K' lower/raise its
 // drive; 'f' toggles the flanger, 'v'/'V' lower/raise its sweep rate, 'b'/'B'
 // its feedback; 'c' toggles the chorus, m/M, d/D and r/R lower/raise its mix,
@@ -29,6 +31,7 @@
 #include "chorus.h"
 #include "distortion.h"
 #include "flanger.h"
+#include "limiter.h"
 #include "lowpass.h"
 #include "noise_gate.h"
 
@@ -50,7 +53,7 @@
 #define DAC_DOUT 23
 #define DAC_DMA_BUFS 4
 #define STAT_HEADER 0xC1
-#define STAT_FIELDS 14
+#define STAT_FIELDS 17
 #define GATE_THRESHOLD 32
 #define CHORUS_MIX 1.0f
 #define CHORUS_DEPTH_MS 3
@@ -65,10 +68,11 @@
 
 struct Stats {
   uint32_t dropped, fx_cycles_max, produced, foreign, dac_short;
+  uint32_t in_min = 4095, in_max = 0;  // ADC average, before any processing
 };
 
 static Stats st;
-static volatile uint32_t pool_ovf = 0;
+static volatile uint32_t pool_ovf = 0, dac_underruns = 0;
 static uint8_t stat_pkt[2 + 2 * STAT_FIELDS];
 static volatile bool stat_ready = false;
 
@@ -98,6 +102,12 @@ static bool IRAM_ATTR on_pool_ovf(adc_continuous_handle_t, const adc_continuous_
   return false;
 }
 
+// The DAC ran out of data and played silence (auto_clear).
+static bool IRAM_ATTR on_dac_underrun(i2s_chan_handle_t, i2s_event_data_t *, void *) {
+  dac_underruns = dac_underruns + 1;
+  return false;
+}
+
 static void build_stats() {
   const uint32_t f[STAT_FIELDS] = {st.dropped, fx, (uint32_t)gate.get_threshold(),
                                    st.fx_cycles_max,
@@ -107,7 +117,8 @@ static void build_stats() {
                                    pool_ovf, st.produced / 10, st.foreign, st.dac_short,
                                    (uint32_t)(dist.get_drive_db() + 0.5f),
                                    (uint32_t)(flanger.get_rate_hz() * 100 + 0.5f),
-                                   (uint32_t)(flanger.get_feedback() * 100 + 0.5f)};
+                                   (uint32_t)(flanger.get_feedback() * 100 + 0.5f),
+                                   st.in_min, st.in_max, dac_underruns};
   stat_pkt[0] = STAT_HEADER;
   stat_pkt[1] = STAT_FIELDS;
   for (int i = 0; i < STAT_FIELDS; i++) {
@@ -117,9 +128,11 @@ static void build_stats() {
   }
   st = {};
   pool_ovf = 0;
+  dac_underruns = 0;
 }
 
-static IRAM_ATTR uint16_t process(uint16_t v) {
+// Takes the ADC average, returns the output centered on 0.
+static IRAM_ATTR float process(float v) {
   if (dc < 0) dc = v;
   dc += (v - dc) * 0.0005f;
   // All always run, so the cost doesn't depend on which ones are on.
@@ -132,9 +145,7 @@ static IRAM_ATTR uint16_t process(uint16_t v) {
   if (fx & FX_FLANGER) b = fl;
   float z = chorus.process(b);
   if (!(fx & FX_CHORUS)) z = b;
-  if (!fx) return v;
-  int out = (int)(dc + z + 0.5f);
-  return out < 0 ? 0 : out > 4095 ? 4095 : out;
+  return Limiter::process(z);
 }
 
 static void tx_task(void *) {
@@ -223,13 +234,16 @@ static void start_dac() {
   sc.gpio_cfg.dout = (gpio_num_t)DAC_DOUT;
   sc.gpio_cfg.din = I2S_GPIO_UNUSED;
   ESP_ERROR_CHECK(i2s_channel_init_std_mode(dac, &sc));
+  i2s_event_callbacks_t cbs = {};
+  cbs.on_send_q_ovf = on_dac_underrun;
+  ESP_ERROR_CHECK(i2s_channel_register_event_callback(dac, &cbs, nullptr));
   ESP_ERROR_CHECK(i2s_channel_enable(dac));
 }
 
-static void write_dac(uint16_t v) {
+static void write_dac(float y) {
   static uint32_t n = 0;
   // One ADC LSB = 2^20 in the 32-bit slot, so ADC full scale is DAC full scale.
-  float s = (v - dc) * 1048576.0f;
+  float s = y * 1048576.0f;
   s = s > 2147483520.0f ? 2147483520.0f : s < -2147483520.0f ? -2147483520.0f : s;
   dac_buf[2 * n] = dac_buf[2 * n + 1] = (int32_t)s;
   if (++n < FRAME_SAMPLES) return;
@@ -270,24 +284,27 @@ void loop() {
       }
       sum += d->type1.data;
       if (++in_group < OS) continue;
-      uint16_t v = (sum + OS / 2) / OS;
+      uint32_t iv = (sum + OS / 2) / OS;
+      float v = sum * (1.0f / OS);
       sum = in_group = 0;
+      st.in_min = min(st.in_min, iv);
+      st.in_max = max(st.in_max, iv);
 
       uint32_t c0 = esp_cpu_get_cycle_count();
-      v = process(v);
+      float y = process(v);
       st.fx_cycles_max = max(st.fx_cycles_max, esp_cpu_get_cycle_count() - c0);
-      write_dac(v);
+      write_dac(y);
       st.produced++;
 
-      float a = stream_aa2.process(stream_aa1.process(v - dc));
+      float a = stream_aa2.process(stream_aa1.process(y));
       if (++dec_n < STREAM_DECIM) continue;
       dec_n = 0;
       int sv = (int)(dc + a + 0.5f);
-      v = sv < 0 ? 0 : sv > 4095 ? 4095 : sv;
+      uint16_t out_v = sv < 0 ? 0 : sv > 4095 ? 4095 : sv;
       bool full = wr - rd >= NBLK;
       uint8_t *out = full ? scratch : ring[wr % NBLK];
-      out[2 * out_i] = 0x80 | (v >> 6);
-      out[2 * out_i + 1] = v & 0x3F;
+      out[2 * out_i] = 0x80 | (out_v >> 6);
+      out[2 * out_i + 1] = out_v & 0x3F;
       if (++out_i == BLOCK) {
         out_i = 0;
         if (full) {
