@@ -4,9 +4,8 @@
 // Below the threshold (RMS) the gain falls as (level / threshold)^4, so a
 // decaying note fades smoothly instead of switching off.
 //
-// Runs inside the sampling loop, where there are only ~13 us to spare: no
-// library calls (sqrtf etc. live in flash and slowed down analogRead through
-// the instruction cache) and the target gain is updated every CONTROL samples.
+// Runs in the sampling loop: no library calls (sqrtf etc. live in flash), and
+// the target gain is updated every CONTROL samples.
 class NoiseGate {
  public:
   static constexpr unsigned CONTROL = 16;
