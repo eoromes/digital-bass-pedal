@@ -5,8 +5,9 @@
 // Core 1 reads the DMA frames and runs the effects; core 0 sends.
 //
 // Effects run per sample. Commands from the PC: 'g' toggles the noise gate,
-// '[' and ']' lower and raise its threshold, 'c' toggles the chorus; m/M, d/D
-// and r/R lower/raise its mix, depth and rate.
+// '[' and ']' lower and raise its threshold, 'c' toggles the chorus; m/M, d/D,
+// r/R and f/F lower/raise its mix, depth, rate and low filter (the frequency
+// below which the bass stays dry).
 //
 // Sample: 10xxxxxx 0xxxxxxx (12 bits). Once per second: STAT_HEADER, field
 // count and 14-bit fields as two 0xxxxxxx bytes (see build_stats). Fields 0-4
@@ -26,11 +27,12 @@
 #define FRAME_SAMPLES 32
 #define FRAME_BYTES (FRAME_SAMPLES * OS * SOC_ADC_DIGI_RESULT_BYTES)
 #define STAT_HEADER 0xC1
-#define STAT_FIELDS 19
+#define STAT_FIELDS 20
 #define GATE_THRESHOLD 32
-#define CHORUS_MIX 0.6f
-#define CHORUS_DEPTH_MS 4
-#define CHORUS_RATE_HZ 0.8f
+#define CHORUS_MIX 0.5f
+#define CHORUS_DEPTH_MS 2
+#define CHORUS_RATE_HZ 0.5f
+#define CHORUS_SPLIT_HZ 100
 #define FX_GATE 1
 #define FX_CHORUS 2
 
@@ -64,10 +66,11 @@ static bool IRAM_ATTR on_pool_ovf(adc_continuous_handle_t, const adc_continuous_
 static void build_stats() {
   const uint32_t f[STAT_FIELDS] = {0, 0, 0, 0, 0, st.dropped, 0, 0, 0, 0, fx,
                                    (uint32_t)gate.get_threshold(), st.fx_cycles_max,
-                                   (uint32_t)(chorus.mix * 100 + 0.5f),
+                                   (uint32_t)(chorus.get_mix() * 100 + 0.5f),
                                    (uint32_t)(chorus.get_depth_ms() * 10 + 0.5f),
                                    (uint32_t)(chorus.get_rate_hz() * 100 + 0.5f),
-                                   pool_ovf, st.produced, st.foreign};
+                                   pool_ovf, st.produced, st.foreign,
+                                   (uint32_t)(chorus.get_split_hz() + 0.5f)};
   stat_pkt[0] = STAT_HEADER;
   stat_pkt[1] = STAT_FIELDS;
   for (int i = 0; i < STAT_FIELDS; i++) {
@@ -106,13 +109,14 @@ static void tx_task(void *) {
       float t = gate.get_threshold();
       if (c == '[' && t > 2) gate.set_threshold(t - 2);
       if (c == ']' && t < 60) gate.set_threshold(t + 2);
-      float mix = chorus.mix;
-      if (c == 'm') chorus.mix = mix > 0.05f ? mix - 0.1f : 0;
-      if (c == 'M') chorus.mix = mix < 1.45f ? mix + 0.1f : 1.5f;
+      if (c == 'm') chorus.set_mix(chorus.get_mix() - 0.1f);
+      if (c == 'M') chorus.set_mix(chorus.get_mix() + 0.1f);
       if (c == 'd') chorus.set_depth_ms(chorus.get_depth_ms() - 0.5f);
       if (c == 'D') chorus.set_depth_ms(chorus.get_depth_ms() + 0.5f);
       if (c == 'r') chorus.set_rate_hz(chorus.get_rate_hz() - 0.1f);
       if (c == 'R') chorus.set_rate_hz(chorus.get_rate_hz() + 0.1f);
+      if (c == 'f') chorus.set_split_hz(chorus.get_split_hz() * 0.8f);
+      if (c == 'F') chorus.set_split_hz(chorus.get_split_hz() * 1.25f);
     }
     while (rd != wr) {
       __sync_synchronize();
@@ -158,7 +162,7 @@ static void start_adc() {
 void setup() {
   vTaskPrioritySet(nullptr, configMAX_PRIORITIES - 2);
   gate.init(SAMPLE_RATE, GATE_THRESHOLD);
-  chorus.init(SAMPLE_RATE, CHORUS_MIX, CHORUS_DEPTH_MS, CHORUS_RATE_HZ);
+  chorus.init(SAMPLE_RATE, CHORUS_MIX, CHORUS_DEPTH_MS, CHORUS_RATE_HZ, CHORUS_SPLIT_HZ);
   xTaskCreatePinnedToCore(tx_task, "tx", 4096, nullptr, 5, nullptr, 0);
   while (!tx_ready) delay(1);
   start_adc();
