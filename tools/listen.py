@@ -9,9 +9,9 @@ With --save, writes the values sent by the ESP32 to a WAV file
 an effect on, those are the processed values; the effects column says which.
 
 Keys: g toggles the noise gate, [ and ] change its threshold; c toggles the
-chorus, m/M d/D r/R lower/raise its mix, depth and rate; q quits. With the
-ADC1 DMA test firmware (src/dma_test.cpp), 0..4 average 1, 2, 4, 8 or 16
-conversions per sample; --send 2 sends a key at start.
+chorus, m/M d/D r/R f/F lower/raise its mix, depth, rate and low filter; q
+quits. With the ADC1 DMA test firmware (src/dma_test.cpp), 0..4 average 1,
+2, 4, 8 or 16 conversions per sample; --send 2 sends a key at start.
 """
 
 import argparse
@@ -35,12 +35,13 @@ STAT_NAMES = ("max_late_us", "late_over_2us", "late_over_10us", "late_over_50us"
               "read_mean_us_x10", "read_max_us", "min_slack_us", "effects",
               "gate_threshold_lsb", "fx_max_cycles",
               "chorus_mix_x100", "chorus_depth_ms_x10", "chorus_rate_hz_x100",
-              "pool_overflows", "samples_per_s", "foreign_channel")
+              "pool_overflows", "samples_per_s", "foreign_channel",
+              "chorus_split_hz")
 DMA_STAT_NAMES = ("pin", "mean_of", "samples_per_s", "dropped_blocks",
                   "pool_overflows", "foreign_channel")
 FX_GATE = 1
 FX_CHORUS = 2
-KEYS = b"g[]cmMdDrR01234"
+KEYS = b"g[]cmMdDrRfF01234"
 
 
 def open_serial(port, baud):
@@ -190,6 +191,8 @@ def main():
                         fx = vals[10] if len(vals) > 10 else None
                         threshold = vals[11] if len(vals) > 11 else None
                         chorus = vals[13:16] if len(vals) > 15 else None
+                        if chorus and len(vals) > 19:
+                            chorus.append(vals[19])
                         if timing:
                             timing.add(vals)
                     stat = [] if b in (STAT_HEADER, DMA_STAT_HEADER) else None
@@ -222,6 +225,8 @@ def main():
                 if chorus:
                     gate += (f" mix {chorus[0] / 100:.1f} depth {chorus[1] / 10:.1f} ms"
                              f" rate {chorus[2] / 100:.2f} Hz")
+                    if len(chorus) > 3:
+                        gate += f" low filter {chorus[3]} Hz"
                 print(f"raw {lo:4d}..{hi:4d}  rms {(sq / count) ** 0.5:5.1f}{gate}", flush=True)
                 lo, hi, sq, count, t0 = 4095, 0, 0.0, 0, time.monotonic()
                 if wav:
