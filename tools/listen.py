@@ -11,7 +11,7 @@ With --save, writes the values sent by the ESP32 to a WAV file
 an effect on, those are the processed values; the effects column says which.
 
 Keys: g toggles the noise gate, [ and ] change its threshold; c toggles the
-chorus, m/M d/D r/R l/L lower/raise its mix, depth, rate and low filter; w
+chorus, m/M d/D r/R lower/raise its mix, depth and rate; w
 toggles the auto-wah off/envelope/LFO, s/S its sensitivity, e/E its LFO rate;
 o toggles the distortion, k/K its drive; q quits. With the ADC1 DMA test
 firmware (src/dma_test.cpp), 0..6 average 1 to 64 conversions per sample;
@@ -38,15 +38,14 @@ STAT_NAMES = ("max_late_us", "late_over_2us", "late_over_10us", "late_over_50us"
               "gate_threshold_lsb", "fx_max_cycles",
               "chorus_mix_x100", "chorus_depth_ms_x10", "chorus_rate_hz_x100",
               "pool_overflows", "samples_per_s_div10", "foreign_channel",
-              "dac_short_writes", "dist_drive_db", "wah_sensitivity_x100", "wah_lfo", "wah_lfo_hz_x100",
-              "chorus_split_hz")
+              "dac_short_writes", "dist_drive_db", "wah_sensitivity_x100", "wah_lfo", "wah_lfo_hz_x100")
 DMA_STAT_NAMES = ("pin", "mean_of", "samples_per_s", "dropped_blocks",
                   "pool_overflows", "foreign_channel")
 FX_GATE = 1
 FX_CHORUS = 2
 FX_WAH = 4
 FX_DIST = 8
-KEYS = b"g[]cmMdDrRlLwsSeEokK0123456"
+KEYS = b"g[]cmMdDrRwsSeEokK0123456"
 HELP = """keys:
   g      noise gate on/off        [ ]  gate threshold -/+
   w      auto-wah off/env/LFO     s S  wah sensitivity -/+
@@ -54,7 +53,6 @@ HELP = """keys:
   o      distortion on/off        k K  distortion drive -/+ 3 dB
   c      chorus on/off            m M  chorus mix -/+
   d D    chorus depth -/+         r R  chorus rate -/+
-                                  l L  chorus low filter -/+
   q      quit"""
 
 
@@ -186,7 +184,7 @@ def main():
         threading.Thread(target=forward_keys, args=(fd,), daemon=True).start()
         print(HELP, flush=True)
 
-    high = stat = dc = fx = threshold = chorus = dma = dac = lfo = split = None
+    high = stat = dc = fx = threshold = chorus = dma = dac = lfo = None
     header = None
     lo, hi, sq, count = 4095, 0, 0.0, 0
     raw = array.array("h")
@@ -214,7 +212,6 @@ def main():
                         chorus = vals[13:16] if len(vals) > 15 else None
                         dac = vals[19:22] if len(vals) > 21 else None
                         lfo = vals[22:24] if len(vals) > 23 else None
-                        split = vals[24] if len(vals) > 24 else None
                         if timing:
                             timing.add(vals)
                     stat = [] if b in (STAT_HEADER, DMA_STAT_HEADER) else None
@@ -259,8 +256,6 @@ def main():
                     if chorus:
                         c += (f" mix {chorus[0] / 100:.1f} depth {chorus[1] / 10:.1f} ms"
                               f" rate {chorus[2] / 100:.2f} Hz")
-                        if split is not None:
-                            c += f" low filter {split} Hz"
                     parts.append(c)
                 if dac and dac[0]:
                     parts.append(f"dac short writes {dac[0]}")
