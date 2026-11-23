@@ -2,7 +2,7 @@
 
 Digital bass effects pedal built around an original ESP32.
 
-The bass signal goes through an analog preamp into an ADC, the effects run on the ESP32 itself, and the audio goes out to the amp through an I2S DAC. Everything is on a breadboard for now, powered from the board's USB port.
+The bass signal goes through an analog preamp into the ESP32's ADC, the effects run on the ESP32 itself at 48 kHz, and the audio goes out to the amp through an I2S DAC. Everything is on a breadboard for now, powered from the board's USB port.
 
 ```
 bass -> preamp (MCP6002) -> ADC -> ESP32 effects -> PCM5102A DAC -> volume -> amp
@@ -15,7 +15,7 @@ Write-up of the project so far: [docs/article.md](docs/article.md) (draft).
 - ESP32 DevKit (original ESP32, dual-core 240 MHz, with a CP2102 USB-serial bridge)
 - MCP6002 as a high-impedance buffer, adjustable gain (1x to 11x) and ~11 kHz anti-aliasing filter
 - Input: the ESP32's built-in ADC
-- Output: PCM5102A I2S DAC (not connected yet)
+- Output: PCM5102A I2S DAC, then a level divider and a volume pot
 - Planned: one button and one LED per effect
 
 ### Pins
@@ -23,18 +23,21 @@ Write-up of the project so far: [docs/article.md](docs/article.md) (draft).
 | Function | GPIO |
 | --- | --- |
 | Audio input (built-in ADC1, continuous mode) | 33 |
+| PCM5102A BCK / LCK / DIN (I2S1) | 18 / 19 / 23 |
 
-The pins for the PCM5102A, the buttons and the LEDs are not decided yet. GPIO12 is a boot strapping pin on the original ESP32.
-
-The PCM5102A needs SCK tied to GND and the XSMT jumper set to H, otherwise it stays muted.
+The PCM5102A needs SCK, FLT, DEMP and FMT tied to GND and XSMT to 3.3 V, otherwise it stays muted. The buttons and LEDs aren't wired yet.
 
 ## Effects
 
-- Noise gate (RMS expander), working
-- Chorus applied only above ~150 Hz, working
-- Planned: overdrive, compressor, delay
+In this order:
 
-The effects run sample by sample inside the sampling loop, in IRAM. Gate and chorus together cost about 700 CPU cycles per sample.
+- Noise gate (RMS expander)
+- Distortion: the lows below ~150 Hz stay clean, the rest is soft-clipped
+- Flanger: 0.2 to 4 ms delay swept by an LFO, with feedback
+- Two-voice chorus on the whole signal
+- Planned: compressor, delay
+
+The effects run sample by sample in IRAM. With all of them on, the worst sample takes about 1,400 of the ~5,000 CPU cycles available at 48 kHz.
 
 ## Building
 
@@ -42,17 +45,17 @@ Uses [PlatformIO](https://platformio.org/):
 
 ```sh
 pio run -t upload               # main firmware (src/main.cpp)
-pio run -e capture -t upload    # RAM capture test firmware (src/ram_capture.cpp)
 PLATFORMIO_BUILD_FLAGS=-DADC_PIN=33 pio run -e dma -t upload   # ADC1 DMA test firmware (src/dma_test.cpp)
+pio run -e probe -t upload      # the ESP32 as a DC voltmeter on GPIO32/33 (src/probe.cpp)
 ```
 
 ## Listening and analysis tools
 
-The current firmware samples GPIO33 with DMA at 256 kHz, averages each 16 conversions into one 16 kHz sample, and streams the raw samples to the PC over USB. The scripts in `tools/` play them back and analyze recordings:
+The firmware samples GPIO33 with DMA at 384 kHz and averages each 8 conversions into one 48 kHz sample. Besides playing on the DAC, it streams the signal to the PC over USB at 16 kHz (low-passed at 7 kHz, one sample in three), with a stats packet once per second. The scripts in `tools/` show, record and analyze it:
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
-.venv/bin/python tools/listen.py --save take.wav   # play and record (keys: g gate, [ ] threshold, c chorus, m/M d/D r/R its mix, depth, rate)
+.venv/bin/python tools/listen.py --save take.wav   # show levels and effects, record; --play also plays on the PC (keys listed at start)
 .venv/bin/python tools/analyze.py take.wav         # noise analysis
 .venv/bin/python tools/view.py take.wav            # waveform, clipping, attacks
 ```
@@ -61,6 +64,6 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 
 ## Status
 
-The analog input is built and characterized. With its input tied to a clean DC level, the built-in ADC alone reaches only about 55-60 dB of dynamic range, and each `analogRead` takes about 41 µs, which caps software sampling at about 20 kHz. Continuous mode with DMA on GPIO33, averaging 16 conversions per sample, lowers the ADC hiss by about 4.5 dB and frees the CPU. Next step for this version: the PCM5102A output.
+The input and the output both work. With its input tied to a clean DC level, the built-in ADC alone reaches only about 55-60 dB of dynamic range, and each `analogRead` took about 41 µs, which capped software sampling at about 20 kHz. Continuous mode with DMA on GPIO33, averaging conversions per sample, lowers the ADC hiss and frees the CPU. Running at 48 kHz moves the DAC's out-of-band noise above the audible range. Next steps: the noise on the output, latency, and the buttons.
 
 A future version may replace the built-in ADC with an external audio ADC (such as the PCM1808) for a much better signal-to-noise ratio.
