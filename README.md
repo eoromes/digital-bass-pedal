@@ -34,10 +34,10 @@ In this order:
 - Noise gate (RMS expander)
 - Distortion: the lows below ~150 Hz stay clean, the rest is soft-clipped
 - Flanger: 0.2 to 4 ms delay swept by an LFO, with feedback
-- Two-voice chorus on the whole signal
+- Two-voice chorus, at a third of the mix below 120 Hz so the low E keeps its fundamental
 - Planned: compressor, delay
 
-The effects run sample by sample in IRAM. With all of them on, the worst sample takes about 1,400 of the ~5,000 CPU cycles available at 48 kHz.
+The effects run sample by sample in IRAM. With all of them on, the worst sample takes about 2,300 of the ~5,000 CPU cycles available at 48 kHz. A soft limiter before the DAC rounds off peaks above about three quarters of full scale.
 
 ## Building
 
