@@ -67,6 +67,14 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 
 ## Status
 
-The input and the output both work. With its input tied to a clean DC level, the built-in ADC alone reaches only about 55-60 dB of dynamic range, and each `analogRead` took about 41 µs, which capped software sampling at about 20 kHz. Continuous mode with DMA on GPIO33, averaging conversions per sample, lowers the ADC hiss and frees the CPU. Running at 48 kHz moves the DAC's out-of-band noise above the audible range. Next steps: the noise on the output, latency, and the buttons.
+The pedal works end to end on the breadboard: bass in, effects on the ESP32 at 48 kHz, out through the DAC to the amp, as in the video above.
+
+The input was the hard part. With its input tied to a clean DC level, the built-in ADC alone reaches only about 55-60 dB of dynamic range, and each `analogRead` took about 41 µs, which capped software sampling at about 20 kHz. Continuous mode with DMA, averaging several conversions per sample, lowers the ADC hiss and frees the CPU. With that, the quietest ADC1 pin (GPIO33) and the laptop on battery (its charger made a ground loop), the ratio between playing and resting went from about 28 dB to about 40 dB. Running at 48 kHz moves the DAC's out-of-band noise above the audible range.
+
+Known limitations:
+
+- Some hiss is still audible on the amp, most likely from how the DAC module is grounded on the breadboard.
+- A short burst of noise about every 640 ms comes from the digital side; its source wasn't found.
+- The latency from input to output hasn't been measured.
 
 A future version may replace the built-in ADC with an external audio ADC (such as the PCM1808) for a much better signal-to-noise ratio.
