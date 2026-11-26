@@ -4,7 +4,7 @@ Digital bass effects pedal built around an original ESP32.
 
 https://github.com/user-attachments/assets/c89f3586-0b72-473c-83ae-9768305bff6b
 
-*The pedal through a bass amp: clean, chorus and flanger on a held note, then distortion alone, with chorus and with flanger on a riff. Recorded with a phone in front of the amp; the player starts muted.*
+*The pedal through a bass amp: clean, chorus and flanger on a held note, then distortion alone, with chorus and with flanger on a riff. Recorded with a phone in front of the amp.*
 
 The bass signal goes through an analog preamp into the ESP32's ADC, the effects run on the ESP32 itself at 48 kHz, and the audio goes out to the amp through an I2S DAC. Everything is on a breadboard for now, powered from the board's USB port.
 
@@ -20,7 +20,6 @@ Write-up of the project so far: [docs/article.md](docs/article.md) (draft).
 - MCP6002 as a high-impedance buffer, adjustable gain (1x to 11x) and ~11 kHz anti-aliasing filter
 - Input: the ESP32's built-in ADC
 - Output: PCM5102A I2S DAC, then a level divider and a volume pot
-- Planned: one button and one LED per effect
 
 ### Pins
 
@@ -29,7 +28,7 @@ Write-up of the project so far: [docs/article.md](docs/article.md) (draft).
 | Audio input (built-in ADC1, continuous mode) | 33 |
 | PCM5102A BCK / LCK / DIN (I2S1) | 18 / 19 / 23 |
 
-The PCM5102A needs SCK, FLT, DEMP and FMT tied to GND and XSMT to 3.3 V, otherwise it stays muted. The buttons and LEDs aren't wired yet.
+The PCM5102A needs SCK, FLT, DEMP and FMT tied to GND and XSMT to 3.3 V, otherwise it stays muted.
 
 ## Effects
 
@@ -41,7 +40,7 @@ In this order:
 - Two-voice chorus, at a third of the mix below 120 Hz so the low E keeps its fundamental
 - Planned: compressor, delay
 
-The effects run sample by sample in IRAM. With all of them on, the worst sample takes about 2,300 of the ~5,000 CPU cycles available at 48 kHz. A soft limiter before the DAC rounds off peaks above about three quarters of full scale.
+The effects run sample by sample in IRAM. With all of them on, the worst sample takes about 2,300 of the ~5,000 CPU cycles available at 48 kHz. A soft limiter before the DAC rounds off peaks above about three quarters of full scale. The effects are switched on and off, and adjusted, from the PC with `tools/listen.py`.
 
 ## Building
 
