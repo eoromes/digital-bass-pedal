@@ -12,9 +12,11 @@ The bass signal goes through an analog preamp into the ESP32's ADC, the effects 
 bass -> preamp (MCP6002) -> ADC -> ESP32 effects -> PCM5102A DAC -> volume -> amp
 ```
 
-Write-up of the project so far: [docs/article.md](docs/article.md) (draft).
+Write-up of the project: [docs/article.md](docs/article.md).
 
 ## Hardware
+
+![The prototype on a breadboard](docs/figures/breadboard.jpg)
 
 - ESP32 DevKit (original ESP32, dual-core 240 MHz, with a CP2102 USB-serial bridge)
 - MCP6002 as a high-impedance buffer, adjustable gain (1x to 11x) and ~11 kHz anti-aliasing filter
