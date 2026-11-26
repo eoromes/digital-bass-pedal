@@ -77,6 +77,5 @@ Known limitations:
 
 - Some hiss is still audible on the amp, most likely from how the DAC module is grounded on the breadboard.
 - A short burst of noise about every 640 ms comes from the digital side; its source wasn't found.
-- The latency from input to output hasn't been measured.
 
 A future version may replace the built-in ADC with an external audio ADC (such as the PCM1808) for a much better signal-to-noise ratio.
