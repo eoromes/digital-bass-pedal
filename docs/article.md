@@ -151,7 +151,6 @@ I also tried an auto-wah, and dropped it: I didn't like how it sounded on bass.
 
 - Some hiss is still audible through the amp. A digital filter doesn't remove it, and the most likely cause is how the DAC module is grounded on the breadboard.
 - A short burst of noise comes about every 640 ms from the digital side. I ruled out the jack, the charger, the USB port, the ADC block, the bass cable, the op-amp and the serial traffic (by recording to RAM with the serial link stopped), but I didn't find the source.
-- I haven't measured the latency from input to output.
 
 ## Next version: an external audio ADC
 
