@@ -2,6 +2,10 @@
 
 Digital bass effects pedal built around an original ESP32.
 
+https://github.com/user-attachments/assets/c89f3586-0b72-473c-83ae-9768305bff6b
+
+*The pedal through a bass amp: clean, chorus and flanger on a held note, then distortion alone, with chorus and with flanger on a riff. Recorded with a phone in front of the amp; the player starts muted.*
+
 The bass signal goes through an analog preamp into the ESP32's ADC, the effects run on the ESP32 itself at 48 kHz, and the audio goes out to the amp through an I2S DAC. Everything is on a breadboard for now, powered from the board's USB port.
 
 ```
