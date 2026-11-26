@@ -4,7 +4,7 @@ Digital bass effects pedal built around an original ESP32.
 
 https://github.com/user-attachments/assets/c89f3586-0b72-473c-83ae-9768305bff6b
 
-*The pedal through a bass amp: clean, chorus and flanger on a held note, then distortion alone, with chorus and with flanger on a riff. Recorded with a phone in front of the amp; the player starts muted.*
+*The pedal through a bass amp: clean, chorus and flanger on a held note, then distortion alone, with chorus and with flanger on a riff. Recorded with a phone in front of the amp.*
 
 The bass signal goes through an analog preamp into the ESP32's ADC, the effects run on the ESP32 itself at 48 kHz, and the audio goes out to the amp through an I2S DAC. Everything is on a breadboard for now, powered from the board's USB port.
 
@@ -12,15 +12,16 @@ The bass signal goes through an analog preamp into the ESP32's ADC, the effects 
 bass -> preamp (MCP6002) -> ADC -> ESP32 effects -> PCM5102A DAC -> volume -> amp
 ```
 
-Write-up of the project so far: [docs/article.md](docs/article.md) (draft).
+Write-up of the project: [docs/article.md](docs/article.md).
 
 ## Hardware
+
+![The prototype on a breadboard](docs/figures/breadboard.jpg)
 
 - ESP32 DevKit (original ESP32, dual-core 240 MHz, with a CP2102 USB-serial bridge)
 - MCP6002 as a high-impedance buffer, adjustable gain (1x to 11x) and ~11 kHz anti-aliasing filter
 - Input: the ESP32's built-in ADC
 - Output: PCM5102A I2S DAC, then a level divider and a volume pot
-- Planned: one button and one LED per effect
 
 ### Pins
 
@@ -29,7 +30,7 @@ Write-up of the project so far: [docs/article.md](docs/article.md) (draft).
 | Audio input (built-in ADC1, continuous mode) | 33 |
 | PCM5102A BCK / LCK / DIN (I2S1) | 18 / 19 / 23 |
 
-The PCM5102A needs SCK, FLT, DEMP and FMT tied to GND and XSMT to 3.3 V, otherwise it stays muted. The buttons and LEDs aren't wired yet.
+The PCM5102A needs SCK, FLT, DEMP and FMT tied to GND and XSMT to 3.3 V, otherwise it stays muted.
 
 ## Effects
 
@@ -41,7 +42,7 @@ In this order:
 - Two-voice chorus, at a third of the mix below 120 Hz so the low E keeps its fundamental
 - Planned: compressor, delay
 
-The effects run sample by sample in IRAM. With all of them on, the worst sample takes about 2,300 of the ~5,000 CPU cycles available at 48 kHz. A soft limiter before the DAC rounds off peaks above about three quarters of full scale.
+The effects run sample by sample in IRAM. With all of them on, the worst sample takes about 2,300 of the ~5,000 CPU cycles available at 48 kHz. A soft limiter before the DAC rounds off peaks above about three quarters of full scale. The effects are switched on and off, and adjusted, from the PC with `tools/listen.py`.
 
 ## Building
 
@@ -68,6 +69,14 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 
 ## Status
 
-The input and the output both work. With its input tied to a clean DC level, the built-in ADC alone reaches only about 55-60 dB of dynamic range, and each `analogRead` took about 41 µs, which capped software sampling at about 20 kHz. Continuous mode with DMA on GPIO33, averaging conversions per sample, lowers the ADC hiss and frees the CPU. Running at 48 kHz moves the DAC's out-of-band noise above the audible range. Next steps: the noise on the output, latency, and the buttons.
+The pedal works end to end on the breadboard: bass in, effects on the ESP32 at 48 kHz, out through the DAC to the amp, as in the video above.
+
+The input was the hard part. With its input tied to a clean DC level, the built-in ADC alone reaches only about 55-60 dB of dynamic range, and each `analogRead` took about 41 µs, which capped software sampling at about 20 kHz. Continuous mode with DMA, averaging several conversions per sample, lowers the ADC hiss and frees the CPU. With that, the quietest ADC1 pin (GPIO33) and the laptop on battery (its charger made a ground loop), the ratio between playing and resting went from about 28 dB to about 40 dB. Running at 48 kHz moves the DAC's out-of-band noise above the audible range.
+
+Known limitations:
+
+- Some hiss is still audible on the amp, most likely from how the DAC module is grounded on the breadboard.
+- A short burst of noise about every 640 ms comes from the digital side; its source wasn't found.
+- The latency from input to output hasn't been measured.
 
 A future version may replace the built-in ADC with an external audio ADC (such as the PCM1808) for a much better signal-to-noise ratio.
