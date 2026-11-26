@@ -2,6 +2,10 @@
 
 *Draft markers: **[TBD]** = not done yet (DAC output, latency). **[NOTE]** = may still change. **[FIG]** = planned figure.*
 
+https://github.com/user-attachments/assets/c89f3586-0b72-473c-83ae-9768305bff6b
+
+*The pedal through a bass amp: clean, chorus and flanger on a held note, then distortion alone, with chorus and with flanger on a riff. Recorded with a phone in front of the amp.*
+
 ## TL;DR
 
 - I'm building a bass effects pedal on an original ESP32, a board that costs a few euros. The input side is done: the bass goes into the ESP32 and a noise gate and a chorus run on the chip. With no output stage yet, I stream the audio to my PC and listen there, using the board as a makeshift audio interface for testing.
